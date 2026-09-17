@@ -26,14 +26,14 @@ GhostOrigin turns your origin server completely dark to the public internet:
 Run this single command on your server to automatically install and configure everything:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/taills/ghost-origin/main/install.sh | sudo bash -s -- install --yes
+curl -fsSL https://raw.githubusercontent.com/taills/ghost-origin/main/ghost-origin.sh | sudo bash -s -- install --yes
 ```
 
 Need custom parameters? Pass flags directly through `bash -s --`:
 
 ```bash
 # Example: Set knock window to 120s and whitelist an office IP on install
-curl -fsSL https://raw.githubusercontent.com/taills/ghost-origin/main/install.sh | sudo bash -s -- install \
+curl -fsSL https://raw.githubusercontent.com/taills/ghost-origin/main/ghost-origin.sh | sudo bash -s -- install \
   --cf-ports 80,443 \
   --spa-ports tcp/22 \
   --timeout 120 \
@@ -48,8 +48,27 @@ curl -fsSL https://raw.githubusercontent.com/taills/ghost-origin/main/install.sh
 ```bash
 git clone https://github.com/taills/ghost-origin.git
 cd ghost-origin
-sudo ./install.sh install --yes
+sudo bash ./ghost-origin.sh install --yes
 ```
+
+### Use the Installed Command
+
+After successful installation, the script installs itself as `/usr/bin/ghost-origin` (root:root, mode `0755`). It no longer depends on the checkout directory. From a root shell:
+
+```bash
+sudo -i
+ghost-origin status
+ghost-origin allow-ip 192.0.2.10 --port 22
+ghost-origin list-ip
+ghost-origin del-ip 192.0.2.10
+ghost-origin update-cf
+```
+
+Management commands still reject non-root users; there is no automatic privilege escalation. `ghost-origin --help` does not require root.
+
+Local installation copies the running script. A `curl | bash` installation has no source file, so it downloads the script again from this repository's `main` branch, checks its syntax, and replaces the destination atomically. Because `main` may change between downloads, download and review a pinned version locally when version consistency is required. A failed download leaves any existing command untouched, but does not roll back earlier installation steps. `--dry-run` does not write the command file; `ghost-origin uninstall` also removes it.
+
+All post-install management examples below assume a root shell. Regular users can prefix the entire command with `sudo`.
 
 ### Installation Options
 
@@ -72,7 +91,7 @@ sudo ./install.sh install --yes
 
 > ⚠️ By default, the installer runs `ufw --force reset` to guarantee a clean zero-trust policy. If you already have critical UFW rules configured, add `--keep-ufw-rules`.
 
-> 💡 **Privilege Note**: The script enforces a built-in root check at the main entry point. You can either use `sudo ./install.sh <command>` or switch to a root shell (`sudo -i`) once to run commands directly without repeating `sudo`. Non-root execution is caught upfront with a helpful prompt before any actions take place.
+> 💡 **Privilege Note**: The script enforces a built-in root check at the main entry point. You can either use `ghost-origin <command>` or switch to a root shell (`sudo -i`) once to run commands directly without repeating `sudo`. Non-root execution is caught upfront with a helpful prompt before any actions take place.
 
 ---
 
@@ -127,20 +146,20 @@ For fixed office IPs, jump hosts, or monitoring agents requiring persistent dire
 
 ```bash
 # Allow all ports for an IP (supports IPv4 and IPv6)
-sudo ./install.sh allow-ip 1.2.3.4
-sudo ./install.sh allow-ip 2001:db8::1
+ghost-origin allow-ip 1.2.3.4
+ghost-origin allow-ip 2001:db8::1
 
 # Allow only a specific port (e.g. SSH port 22)
-sudo ./install.sh allow-ip 1.2.3.4 --port 22
+ghost-origin allow-ip 1.2.3.4 --port 22
 
 # Allow an entire CIDR subnet, multiple ports, and attach a comment
-sudo ./install.sh allow-ip 192.168.1.0/24 --port 22,8080 --comment "office-lan"
+ghost-origin allow-ip 192.168.1.0/24 --port 22,8080 --comment "office-lan"
 
 # Allow UDP traffic (e.g. WireGuard VPN)
-sudo ./install.sh allow-ip 1.2.3.4 --port 51820 --proto udp --comment "wireguard"
+ghost-origin allow-ip 1.2.3.4 --port 51820 --proto udp --comment "wireguard"
 
 # Batch add multiple IPs (comma-separated)
-sudo ./install.sh allow-ip 1.1.1.1,2.2.2.2 --port 22
+ghost-origin allow-ip 1.1.1.1,2.2.2.2 --port 22
 ```
 
 > Aliases: `allow-ip`, `add-ip`, `add-whitelist` are identical.
@@ -148,9 +167,9 @@ sudo ./install.sh allow-ip 1.1.1.1,2.2.2.2 --port 22
 ### 2. List Current Whitelisted IPs
 
 ```bash
-sudo ./install.sh list-ip
+ghost-origin list-ip
 # Or
-sudo ./install.sh list-whitelist
+ghost-origin list-whitelist
 ```
 
 Example output:
@@ -171,13 +190,13 @@ Example output:
 
 ```bash
 # Remove all whitelist rules for this IP (across all ports)
-sudo ./install.sh del-ip 1.2.3.4
+ghost-origin del-ip 1.2.3.4
 
 # Remove only the rule for a specific port
-sudo ./install.sh del-ip 1.2.3.4 --port 22
+ghost-origin del-ip 1.2.3.4 --port 22
 
 # Batch remove multiple IPs
-sudo ./install.sh del-ip 1.1.1.1,2.2.2.2
+ghost-origin del-ip 1.1.1.1,2.2.2.2
 ```
 
 > **Safe Deletion**: Deletions only match whitelist (`cf-ufw-whitelist`) and bootstrap rules. Rules are deleted in reverse numerical order, ensuring index stability and **never deleting Cloudflare 80/443 rules**.  
@@ -202,14 +221,33 @@ Cloudflare IP Data Sources:
 
 ---
 
+## Update the Script and Check Its Version
+
+```bash
+# Root shell: upgrade only the CLI script
+ghost-origin update
+# Preview without downloading or writing files
+ghost-origin update --dry-run
+# Version and update date; root is not required
+ghost-origin --version
+```
+
+Current constants: `SCRIPT_VERSION="1.1.0"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
+
+`update` downloads from this repository's `main` branch, checks for nonempty content, valid Bash syntax and the entry-point marker, then atomically replaces `/usr/bin/ghost-origin`. Failures preserve the existing command. It does not run `install` or upgrade helper scripts, dependencies, configuration, keys or firewall rules. `update-cf` only refreshes Cloudflare CIDRs. This trusts HTTPS and the repository; syntax checks are not signature verification. The command always fetches main and does not compare version ordering.
+
+If an older installation has no `ghost-origin` or `update` command, download and review the repository script, then run `sudo install -o root -g root -m 0755 ghost-origin.sh /usr/bin/ghost-origin` to install the CLI without rerunning firewall setup.
+
+---
+
 ## 🔧 Daily Maintenance
 
 ```bash
 # Check overall status (UFW rules, Cloudflare CIDR count, whitelist, fwknopd service)
-sudo ./install.sh status
+ghost-origin status
 
 # Manually trigger Cloudflare CIDR synchronization
-sudo ./install.sh update-cf
+ghost-origin update-cf
 # Or invoke the helper script directly
 sudo /usr/local/sbin/cf-ufw-update
 
@@ -217,7 +255,7 @@ sudo /usr/local/sbin/cf-ufw-update
 systemctl status cf-ufw-update.timer
 
 # View or reprint client knocking credentials
-sudo ./install.sh print-client
+ghost-origin print-client
 ```
 
 > 💡 **Post-Install Security Cleanup**: Once you have verified that fwknop SPA knocking works, remove the temporary bootstrap SSH rule created during installation (`comment=cf-ufw-bootstrap`):
@@ -225,7 +263,7 @@ sudo ./install.sh print-client
 > sudo ufw status numbered
 > sudo ufw delete <rule_number>
 > # Or simply delete your bootstrap IP using del-ip:
-> sudo ./install.sh del-ip <YOUR_CURRENT_IP>
+> ghost-origin del-ip <YOUR_CURRENT_IP>
 > ```
 
 ---
@@ -235,7 +273,7 @@ sudo ./install.sh print-client
 The uninstall command removes all Cloudflare allow rules, whitelist rules, helper scripts, and systemd timers. It **does not disable UFW** and does not remove APT packages:
 
 ```bash
-sudo ./install.sh uninstall
+ghost-origin uninstall
 ```
 
 Original configuration backups are stored under `/root/ghost-origin-backup/`.

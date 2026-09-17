@@ -26,14 +26,14 @@
 直接使用以下单行命令完成全自动安装与配置：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/taills/ghost-origin/main/install.sh | sudo bash -s -- install --yes
+curl -fsSL https://raw.githubusercontent.com/taills/ghost-origin/main/ghost-origin.sh | sudo bash -s -- install --yes
 ```
 
 如果你需要自定义参数（例如放行自定义端口、预设白名单、设置敲门超时）：
 
 ```bash
 # 示例：设置敲门超时 120 秒，初始放行一个办公网白名单 IP
-curl -fsSL https://raw.githubusercontent.com/taills/ghost-origin/main/install.sh | sudo bash -s -- install \
+curl -fsSL https://raw.githubusercontent.com/taills/ghost-origin/main/ghost-origin.sh | sudo bash -s -- install \
   --cf-ports 80,443 \
   --spa-ports tcp/22 \
   --timeout 120 \
@@ -48,8 +48,27 @@ curl -fsSL https://raw.githubusercontent.com/taills/ghost-origin/main/install.sh
 ```bash
 git clone https://github.com/taills/ghost-origin.git
 cd ghost-origin
-sudo ./install.sh install --yes
+sudo bash ./ghost-origin.sh install --yes
 ```
+
+### 安装后直接使用命令
+
+安装成功后，脚本将自身安装为 `/usr/bin/ghost-origin`（root:root，权限 `0755`），不再依赖克隆目录。切换到 root 后即可直接使用：
+
+```bash
+sudo -i
+ghost-origin status
+ghost-origin allow-ip 192.0.2.10 --port 22
+ghost-origin list-ip
+ghost-origin del-ip 192.0.2.10
+ghost-origin update-cf
+```
+
+普通用户直接运行管理命令仍会提示权限不足并退出；不会自动提权。`ghost-origin --help` 无需 root。
+
+本地安装复制正在运行的脚本；`curl | bash` 安装没有源文件，会重新下载上述仓库 `main` 分支脚本，经语法检查后原子替换目标文件。两次下载之间 `main` 可能变化，需固定版本时请下载并审阅同一版本后从本地运行。下载失败不会覆盖已有命令，但此前完成的安装步骤不会自动回滚。`--dry-run` 不写入命令文件；`ghost-origin uninstall` 同时移除该命令。
+
+下文安装后的管理命令均在 root shell 中执行；普通用户可在整条命令前加 `sudo`。
 
 ### 安装常用选项
 
@@ -72,7 +91,7 @@ sudo ./install.sh install --yes
 
 > ⚠️ 默认安装时会执行 `ufw --force reset` 以确保建立纯净的零信任策略。若机器上已有其他重要 UFW 规则，请务必添加 `--keep-ufw-rules` 选项。
 
-> 💡 **权限说明**：本工具已在入口处内置 root 权限检测。你可以使用 `sudo ./install.sh <子命令>`，或直接执行 `sudo -i` 切换到 root 环境后运行（免去每次重复敲 `sudo`）。非 root 运行时会自动拦截、提示并退出，避免执行半途报错。
+> 💡 **权限说明**：本工具已在入口处内置 root 权限检测。你可以使用 `ghost-origin <子命令>`，或直接执行 `sudo -i` 切换到 root 环境后运行（免去每次重复敲 `sudo`）。非 root 运行时会自动拦截、提示并退出，避免执行半途报错。
 
 ---
 
@@ -127,20 +146,20 @@ ssh user@YOUR_SERVER_IP
 
 ```bash
 # 全端口放行单个 IP（支持 IPv4 与 IPv6）
-sudo ./install.sh allow-ip 1.2.3.4
-sudo ./install.sh allow-ip 2001:db8::1
+ghost-origin allow-ip 1.2.3.4
+ghost-origin allow-ip 2001:db8::1
 
 # 仅放行特定端口（如 SSH 22 端口）
-sudo ./install.sh allow-ip 1.2.3.4 --port 22
+ghost-origin allow-ip 1.2.3.4 --port 22
 
 # 放行特定网段、多个端口，并附加备注
-sudo ./install.sh allow-ip 192.168.1.0/24 --port 22,8080 --comment "office-lan"
+ghost-origin allow-ip 192.168.1.0/24 --port 22,8080 --comment "office-lan"
 
 # 放行 UDP 端口（例如 WireGuard VPN）
-sudo ./install.sh allow-ip 1.2.3.4 --port 51820 --proto udp --comment "wireguard"
+ghost-origin allow-ip 1.2.3.4 --port 51820 --proto udp --comment "wireguard"
 
 # 一次性添加多个 IP（逗号分隔）
-sudo ./install.sh allow-ip 1.1.1.1,2.2.2.2 --port 22
+ghost-origin allow-ip 1.1.1.1,2.2.2.2 --port 22
 ```
 
 > 别名支持：`allow-ip`、`add-ip`、`add-whitelist` 效果相同。
@@ -148,9 +167,9 @@ sudo ./install.sh allow-ip 1.1.1.1,2.2.2.2 --port 22
 ### 2. 查看当前白名单列表
 
 ```bash
-sudo ./install.sh list-ip
+ghost-origin list-ip
 # 或
-sudo ./install.sh list-whitelist
+ghost-origin list-whitelist
 ```
 
 输出示例：
@@ -171,13 +190,13 @@ sudo ./install.sh list-whitelist
 
 ```bash
 # 删除该 IP 的所有白名单规则
-sudo ./install.sh del-ip 1.2.3.4
+ghost-origin del-ip 1.2.3.4
 
 # 仅删除该 IP 针对特定端口的规则
-sudo ./install.sh del-ip 1.2.3.4 --port 22
+ghost-origin del-ip 1.2.3.4 --port 22
 
 # 批量删除多个 IP
-sudo ./install.sh del-ip 1.1.1.1,2.2.2.2
+ghost-origin del-ip 1.1.1.1,2.2.2.2
 ```
 
 > **防误删保护**：删除时仅检索白名单（`cf-ufw-whitelist`）与临时应急规则，且采用规则号倒序删除，**绝不会误删** Cloudflare 的 80/443 规则。  
@@ -202,14 +221,33 @@ Cloudflare 官方 IP 数据源：
 
 ---
 
+## 升级脚本与查看版本
+
+```bash
+# root shell：仅升级命令脚本
+ghost-origin update
+# 预览升级，不下载或修改文件
+ghost-origin update --dry-run
+# 无需 root 即可查询版本及更新时间
+ghost-origin --version
+```
+
+当前版本常量为 `SCRIPT_VERSION="1.1.0"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
+
+`update` 从本仓库 `main` 分支下载脚本，检查非空、Bash 语法及入口标记后原子替换 `/usr/bin/ghost-origin`。失败时保留旧命令。该操作不执行 `install`，不更新辅助脚本、依赖、配置、密钥或防火墙规则；`update-cf` 仅同步 Cloudflare 网段，与脚本升级不同。这里依赖 HTTPS 和仓库可信性，语法检查不等于签名验证；始终获取 main，不进行版本大小比较。
+
+旧版本若尚未提供 `ghost-origin` 或 `update`，先从仓库下载并审阅脚本，再用 `sudo install -o root -g root -m 0755 ghost-origin.sh /usr/bin/ghost-origin` 安装命令，无需重跑防火墙安装。
+
+---
+
 ## 🔧 日常维护命令
 
 ```bash
 # 查看整体状态（UFW 规则、Cloudflare 条数、白名单列表、fwknopd 守护进程状态）
-sudo ./install.sh status
+ghost-origin status
 
 # 手动立即同步 Cloudflare 最新 IP 列表
-sudo ./install.sh update-cf
+ghost-origin update-cf
 # 或直接运行更新脚本
 sudo /usr/local/sbin/cf-ufw-update
 
@@ -217,7 +255,7 @@ sudo /usr/local/sbin/cf-ufw-update
 systemctl status cf-ufw-update.timer
 
 # 重新查看/打印客户端敲门配置
-sudo ./install.sh print-client
+ghost-origin print-client
 ```
 
 > 💡 **安全收尾提示**：验证 fwknop 敲门成功后，请使用以下命令删除安装时自动添加的当前 SSH 临时放行规则（备注为 `cf-ufw-bootstrap`）：
@@ -225,7 +263,7 @@ sudo ./install.sh print-client
 > sudo ufw status numbered
 > sudo ufw delete <带有 cf-ufw-bootstrap 备注的规则编号>
 > # 或者直接通过 del-ip 删除你的临时 IP：
-> sudo ./install.sh del-ip <YOUR_CURRENT_IP>
+> ghost-origin del-ip <YOUR_CURRENT_IP>
 > ```
 
 ---
@@ -235,7 +273,7 @@ sudo ./install.sh print-client
 卸载命令会安全清理所有 Cloudflare 放行规则、白名单规则、辅助脚本与 systemd 定时器，**不会关闭 UFW**，也不会卸载系统软件包：
 
 ```bash
-sudo ./install.sh uninstall
+ghost-origin uninstall
 ```
 
 原有的配置文件备份在 `/root/ghost-origin-backup/` 目录下。

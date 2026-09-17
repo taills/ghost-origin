@@ -12,7 +12,8 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="ghost-origin"
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.1.0"
+readonly SCRIPT_UPDATED_AT="2026-09-17"
 readonly PREFIX="/usr/local"
 readonly CONF_DIR="/etc/ghost-origin"
 readonly CONF_FILE="${CONF_DIR}/config"
@@ -91,13 +92,15 @@ EOF
 
 usage() {
   cat <<EOF
-${SCRIPT_NAME} ${SCRIPT_VERSION}
+${SCRIPT_NAME} ${SCRIPT_VERSION} (updated: ${SCRIPT_UPDATED_AT})
 
 用法:
   $0 install [选项]                 安装并配置 ufw + fwknop（默认）
   $0 allow-ip <IP[/CIDR]> [选项]     添加白名单 IP（放行访问，免敲门）
   $0 del-ip <IP[/CIDR]> [选项]       删除白名单 IP 规则
   $0 list-ip                        查看当前白名单 IP 列表
+  $0 update                         从 GitHub main 升级命令脚本，不修改防火墙配置
+  $0 --version                      查看版本号与更新日期
   $0 update-cf                      刷新 Cloudflare IP 放行规则
   $0 status                         查看防火墙 / fwknop 状态
   $0 print-client                   打印敲门客户端配置
@@ -138,7 +141,7 @@ parse_args() {
     shift
   fi
   case "${CMD}" in
-    install|update-cf|status|print-client|uninstall|allow-ip|add-ip|add-whitelist|del-ip|delete-ip|remove-ip|whitelist-del|list-ip|list-whitelist|whitelist|help|-h|--help) ;;
+    install|update|version|update-cf|status|print-client|uninstall|allow-ip|add-ip|add-whitelist|del-ip|delete-ip|remove-ip|whitelist-del|list-ip|list-whitelist|whitelist|help|-h|--help) ;;
     *) die "未知子命令: ${CMD}" ;;
   esac
   case "${CMD}" in
@@ -170,6 +173,7 @@ parse_args() {
       --force-keys) FORCE_KEYS=1; shift ;;
       --yes|-y) ASSUME_YES=1; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
+      -v|--version) printf '%s %s (updated: %s)\n' "${SCRIPT_NAME}" "${SCRIPT_VERSION}" "${SCRIPT_UPDATED_AT}"; exit 0 ;;
       -h|--help) usage; exit 0 ;;
       *) die "未知参数: $1" ;;
     esac
@@ -1005,11 +1009,48 @@ cmd_uninstall() {
             /etc/systemd/system/cf-ufw-update.timer \
             "${PREFIX}/sbin/fwknop-ufw-open" \
             "${PREFIX}/sbin/fwknop-ufw-close" \
-            "${PREFIX}/sbin/cf-ufw-update"
+            "${PREFIX}/sbin/cf-ufw-update" \
+            /usr/bin/ghost-origin
   run rm -rf "${CONF_DIR}"
   have_cmd systemctl && run systemctl daemon-reload || true
   log "已卸载辅助组件。UFW 仍保持当前启用状态；fwknop 软件包未 apt remove。"
   log "如需恢复旧 access.conf，见 ${KEY_BACKUP_DIR}"
+}
+
+# Install a complete executable, never a wrapper that depends on the checkout.
+# curl | bash has no source file: fetch a complete copy before publishing it.
+install_cli() (
+  local source_file="${BASH_SOURCE[0]:-}" stage
+  local destination="/usr/bin/ghost-origin"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log "DRY-RUN: 安装独立命令到 ${destination}（root:root 0755）"
+    return 0
+  fi
+  stage="$(mktemp /usr/bin/.ghost-origin.XXXXXXXX)"
+  trap 'rm -f -- "${stage}"' EXIT
+  if [[ "${1:-local}" != "remote" && -n "${source_file}" && -f "${source_file}" ]]; then
+    cp -- "${source_file}" "${stage}"
+  else
+    log "从 GitHub main 下载最新脚本（HTTPS）。"
+    curl --fail --silent --show-error --location --proto '=https' \
+      --connect-timeout 15 --max-time 60 \
+      https://raw.githubusercontent.com/taills/ghost-origin/main/ghost-origin.sh \
+      -o "${stage}"
+  fi
+  [[ -s "${stage}" ]] || die "命令脚本为空，拒绝安装"
+  bash -n "${stage}" || die "命令脚本语法检查失败"
+  grep -q '^main "\$@"' "${stage}" || die "下载内容不是预期的安装脚本"
+  chown root:root "${stage}"
+  chmod 0755 "${stage}"
+  # Atomic replacement also supports running `ghost-origin install` itself.
+  mv -fT -- "${stage}" "${destination}"
+  log "已安装 ${destination}；现在可以运行 ghost-origin status"
+)
+
+cmd_update() {
+  log "当前版本: ${SCRIPT_VERSION} (${SCRIPT_UPDATED_AT})"
+  log "仅替换 /usr/bin/ghost-origin；不重装依赖、不修改配置、密钥或 UFW 规则。"
+  install_cli remote
 }
 
 cmd_install() {
@@ -1048,6 +1089,7 @@ EOF
   apply_bootstrap_ssh
   apply_initial_whitelist
   enable_services
+  install_cli
   print_summary
 }
 
@@ -1055,12 +1097,14 @@ main() {
   parse_args "$@"
   case "${CMD}" in
     help|-h|--help) usage; exit 0 ;;
+    version) printf '%s %s (updated: %s)\n' "${SCRIPT_NAME}" "${SCRIPT_VERSION}" "${SCRIPT_UPDATED_AT}"; exit 0 ;;
   esac
 
   need_root "$@"
 
   case "${CMD}" in
     install) cmd_install ;;
+    update) cmd_update ;;
     update-cf) load_conf; [[ -x "${PREFIX}/sbin/cf-ufw-update" ]] || die "尚未安装，请先 $0 install"; "${PREFIX}/sbin/cf-ufw-update" ;;
     status) cmd_status ;;
     print-client) cmd_print_client ;;

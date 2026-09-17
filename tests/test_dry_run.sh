@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unit / dry-run test for install.sh without requiring real root.
+# Unit / dry-run test for ghost-origin.sh without requiring real root.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -44,9 +44,9 @@ EOF
 chmod +x "${TMP}/bin/ufw"
 export PATH="${TMP}/bin:${PATH}"
 
-# Create a modified copy of install.sh where need_root is a no-op
-sed 's/need_root()/need_root_disabled()/' install.sh > "${TMP}/install.sh"
-cat <<'EOF' | cat - "${TMP}/install.sh" > "${TMP}/runner.sh"
+# Create a modified copy of ghost-origin.sh where need_root is a no-op
+sed 's/need_root()/need_root_disabled()/' ghost-origin.sh > "${TMP}/ghost-origin.sh"
+cat <<'EOF' | cat - "${TMP}/ghost-origin.sh" > "${TMP}/runner.sh"
 need_root() { :; }
 EOF
 chmod +x "${TMP}/runner.sh"
@@ -97,10 +97,10 @@ if "${TMP}/runner.sh" install --dry-run -y --spa-ports "bad_proto" >/dev/null 2>
   exit 1
 fi
 
-echo "=== 8. Test non-root prompt & exit on install.sh ==="
-out="$(./install.sh status 2>&1 || true)"
+echo "=== 8. Test non-root prompt & exit on ghost-origin.sh ==="
+out="$(./ghost-origin.sh status 2>&1 || true)"
 if ! grep -q "权限不足" <<< "${out}"; then
-  echo "Expected permission denied prompt in install.sh, got: ${out}" >&2
+  echo "Expected permission denied prompt in ghost-origin.sh, got: ${out}" >&2
   exit 1
 fi
 
