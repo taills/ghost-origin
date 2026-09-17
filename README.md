@@ -1,14 +1,25 @@
-# cf-ufw-quickstart
+# GhostOrigin (ghost-origin)
 
-在 Debian/Ubuntu 上一键配置：
+> **Cloudflare at the front door, SPA stealth knock at the back.**  
+> *前门只留 Cloudflare，后门密匙 SPA 敲门。*
 
-- **UFW 默认拒绝入站**
-- **只允许 Cloudflare 访问 TCP 80/443**（官方 CIDR，每日刷新）
-- **其它端口保持关闭**，除非用 **fwknop SPA 敲门** 临时打开（默认 `tcp/22`）
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Debian%20%7C%20Ubuntu-orange.svg)](#)
+[![Bash](https://img.shields.io/badge/shell-bash%20%3E%3D%204-green.svg)](#)
 
-fwknop 的敲门口默认是 UDP 62201。脚本**不会**在 UFW 里放行这个端口：`fwknopd` 用 libpcap 在 INPUT 丢弃之前嗅探，端口对外仍然是关的。
+面向 Cloudflare 源站服务器的零信任自动化防护套件：
 
-## 安装
+- **UFW 默认拒绝所有入站**
+- **只允许 Cloudflare 访问 TCP 80/443**（官方 CIDR，每日自动同步）
+- **其余端口对外彻底隐身**，除非凭 **fwknop SPA（单包授权）** 敲门按需开门（默认打开 60 秒后自动关门）
+- **内置安全白名单系统**（一键添加/删除固定 IP，带倒序防误删保护）
+
+> **为什么是“幽灵源站”？**  
+> fwknop 默认的 SPA 敲门端口（UDP 62201）**无需**在 UFW 防火墙中放行。`fwknopd` 利用 libpcap 在 Linux 底层网卡直接嗅探校验。对于全网任何扫描器（Nmap / Shodan / Censys），你的服务器所有端口全部处于 Closed/Filtered 闭门状态。
+
+---
+
+## 快速安装
 
 ```bash
 sudo ./install.sh install
