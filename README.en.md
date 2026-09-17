@@ -170,7 +170,7 @@ ghost-origin allow-ip 192.168.1.0/24 --port 22,8080 --comment "office-lan"
 ghost-origin allow-ip 1.2.3.4 --port 51820 --proto udp --comment "wireguard"
 
 # Batch add multiple IPs (comma-separated)
-ghost-origin allow-ip 1.1.1.1,2.2.2.2 --port 22
+ghost-origin allow-ip 1.1.2.1,2.2.2.2 --port 22
 ```
 
 > Aliases: `allow-ip`, `add-ip`, `add-whitelist` are identical.
@@ -207,7 +207,7 @@ ghost-origin del-ip 1.2.3.4
 ghost-origin del-ip 1.2.3.4 --port 22
 
 # Batch remove multiple IPs
-ghost-origin del-ip 1.1.1.1,2.2.2.2
+ghost-origin del-ip 1.1.2.1,2.2.2.2
 ```
 
 > **Safe Deletion**: Deletions only match whitelist (`cf-ufw-whitelist`) and bootstrap rules. Rules are deleted in reverse numerical order, ensuring index stability and **never deleting Cloudflare 80/443 rules**.  
@@ -243,7 +243,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-Current constants: `SCRIPT_VERSION="1.1.1"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
+Current constants: `SCRIPT_VERSION="1.1.2"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
 
 `update` downloads from this repository's `main` branch, checks for nonempty content, valid Bash syntax and the entry-point marker, then atomically replaces `/usr/bin/ghost-origin`. Failures preserve the existing command. It does not run `install` or upgrade helper scripts, dependencies, configuration, keys or firewall rules. `update-cf` only refreshes Cloudflare CIDRs. This trusts HTTPS and the repository; syntax checks are not signature verification. The command always fetches main and does not compare version ordering.
 

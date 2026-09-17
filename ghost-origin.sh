@@ -12,7 +12,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="ghost-origin"
-readonly SCRIPT_VERSION="1.1.1"
+readonly SCRIPT_VERSION="1.1.2"
 readonly SCRIPT_UPDATED_AT="2026-09-17"
 readonly PREFIX="/usr/local"
 readonly CONF_DIR="/etc/ghost-origin"
@@ -653,6 +653,43 @@ EOF
   run systemctl enable --now cf-ufw-update.timer
 }
 
+validate_key_file() {
+  python3 - "$1" <<'PY'
+import base64
+import sys
+try:
+    values = {}
+    with open(sys.argv[1], encoding='ascii') as stream:
+        for line in stream:
+            fields = line.split()
+            if fields:
+                fields[0] = fields[0].rstrip(':')
+            if fields and fields[0] in ('KEY_BASE64', 'HMAC_KEY_BASE64'):
+                if len(fields) != 2 or fields[0] in values:
+                    raise ValueError('invalid key entry')
+                values[fields[0]] = base64.b64decode(fields[1], validate=True)
+    if not 1 <= len(values['KEY_BASE64']) <= 32:
+        raise ValueError('invalid encryption key length')
+    if not 1 <= len(values['HMAC_KEY_BASE64']) <= 128:
+        raise ValueError('invalid HMAC key length')
+except (OSError, ValueError, KeyError, UnicodeError):
+    sys.exit(1)
+PY
+}
+
+# Stage and validate before publishing; a failure must not replace existing keys.
+generate_key_file() (
+  local destination="$1" stage_dir
+  umask 077
+  stage_dir="$(mktemp -d /etc/fwknop/.ghost-origin-keys.XXXXXXXX)"
+  trap 'rm -rf -- "${stage_dir}"' EXIT
+  fwknop --key-gen --use-hmac --key-len 32 --hmac-key-len 64 \
+    --key-gen-file "${stage_dir}/keys"
+  validate_key_file "${stage_dir}/keys" || die "新生成的密钥无效，未替换已有密钥"
+  chmod 600 "${stage_dir}/keys"
+  mv -fT -- "${stage_dir}/keys" "${destination}"
+)
+
 generate_keys() {
   local gen_file="/etc/fwknop/${SCRIPT_NAME}.keys"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -662,12 +699,12 @@ generate_keys() {
     return 0
   fi
   if [[ -f "${gen_file}" && "${FORCE_KEYS}" -eq 0 ]]; then
+    validate_key_file "${gen_file}" || die "已有密钥文件无效：${gen_file}。请先备份，再使用 --force-keys 重新生成；客户端也需要更新密钥。"
     log "复用已有密钥 ${gen_file}（需要重新生成请加 --force-keys）"
   else
     backup_file "${gen_file}"
     log "生成 fwknop HMAC 密钥 ..."
-    fwknop --key-gen --use-hmac --key-len 64 --hmac-key-len 64 --key-gen-file "${gen_file}"
-    chmod 600 "${gen_file}"
+    generate_key_file "${gen_file}"
   fi
 
   local key hmac
@@ -1158,7 +1195,6 @@ EOF
 
   write_conf
   write_helpers
-  write_systemd_timer
   generate_keys
   write_fwknop_access
   configure_fwknopd
@@ -1167,6 +1203,7 @@ EOF
   apply_bootstrap_ssh
   apply_initial_whitelist
   enable_services
+  write_systemd_timer
   install_cli
   print_summary
 }

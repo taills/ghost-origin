@@ -170,7 +170,7 @@ ghost-origin allow-ip 192.168.1.0/24 --port 22,8080 --comment "office-lan"
 ghost-origin allow-ip 1.2.3.4 --port 51820 --proto udp --comment "wireguard"
 
 # 一次性添加多个 IP（逗号分隔）
-ghost-origin allow-ip 1.1.1.1,2.2.2.2 --port 22
+ghost-origin allow-ip 1.1.2.1,2.2.2.2 --port 22
 ```
 
 > 别名支持：`allow-ip`、`add-ip`、`add-whitelist` 效果相同。
@@ -207,7 +207,7 @@ ghost-origin del-ip 1.2.3.4
 ghost-origin del-ip 1.2.3.4 --port 22
 
 # 批量删除多个 IP
-ghost-origin del-ip 1.1.1.1,2.2.2.2
+ghost-origin del-ip 1.1.2.1,2.2.2.2
 ```
 
 > **防误删保护**：删除时仅检索白名单（`cf-ufw-whitelist`）与临时应急规则，且采用规则号倒序删除，**绝不会误删** Cloudflare 的 80/443 规则。  
@@ -243,7 +243,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-当前版本常量为 `SCRIPT_VERSION="1.1.1"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
+当前版本常量为 `SCRIPT_VERSION="1.1.2"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
 
 `update` 从本仓库 `main` 分支下载脚本，检查非空、Bash 语法及入口标记后原子替换 `/usr/bin/ghost-origin`。失败时保留旧命令。该操作不执行 `install`，不更新辅助脚本、依赖、配置、密钥或防火墙规则；`update-cf` 仅同步 Cloudflare 网段，与脚本升级不同。这里依赖 HTTPS 和仓库可信性，语法检查不等于签名验证；始终获取 main，不进行版本大小比较。
 
