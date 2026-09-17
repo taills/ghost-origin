@@ -826,15 +826,24 @@ write_client_rc() {
   cat > "${KEY_FILE}" <<EOF
 # fwknop client stanza — copy to ~/.fwknoprc on your laptop
 # 先敲门再 SSH:  fwknop -n ${SCRIPT_NAME} && ssh user@${server_ip}
+#
+# macOS 说明:
+#   如果提示 'Use --wget-cmd <path> to specify path to the wget command':
+#   方法 A (免装 wget): 直接用 curl 传本地公网 IP 敲门:
+#       fwknop -n ${SCRIPT_NAME} -a \$(curl -s4 ifconfig.me)
+#   方法 B (安装 wget): 执行 'brew install wget'，并在下方配置中添加:
+#       WGET_CMD    /opt/homebrew/bin/wget   # Apple Silicon Mac
+#       # 或 WGET_CMD /usr/local/bin/wget    # Intel Mac
 
 [${SCRIPT_NAME}]
 SPA_SERVER          ${server_ip}
+SPA_SERVER_PORT     ${SPA_UDP_PORT}
 ACCESS              ${SPA_PORTS%%,*}
 KEY_BASE64          ${KEY_BASE64}
 HMAC_KEY_BASE64     ${HMAC_KEY_BASE64}
 USE_HMAC            Y
-SPA_SERVER_PORT     ${SPA_UDP_PORT}
 RESOLVE_IP_HTTPS    Y
+# WGET_CMD          /opt/homebrew/bin/wget
 EOF
   chmod 600 "${KEY_FILE}"
 }

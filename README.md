@@ -114,7 +114,7 @@ ghost-origin update-cf
 
 ### 步骤 1：本地客户端安装 fwknop
 
-* **macOS**: `brew install fwknop`
+* **macOS**: `brew install fwknop`（若需在客户端自动解析公网 IP 可同时 `brew install wget`）
 * **Debian / Ubuntu**: `sudo apt install fwknop-client`
 * **Arch Linux**: `sudo pacman -S fwknop`
 * **Windows**: 使用 [fwknop-gui](https://www.cipherdyne.org/fwknop/download/) 或 WSL
@@ -126,22 +126,33 @@ ghost-origin update-cf
 ```ini
 [ghost-origin]
 SPA_SERVER          YOUR_SERVER_IP
+SPA_SERVER_PORT     62201
 ACCESS              tcp/22
 KEY_BASE64          <从服务器 /root/fwknop-client.rc 复制>
 HMAC_KEY_BASE64     <从服务器 /root/fwknop-client.rc 复制>
 USE_HMAC            Y
 RESOLVE_IP_HTTPS    Y
+# macOS 若已通过 brew 安装 wget，取消下一行注释即可（Apple Silicon 路径）：
+# WGET_CMD          /opt/homebrew/bin/wget
 ```
 
 ### 步骤 3：敲门后连接 SSH
 
-```bash
-# 1. 发送加密 SPA 数据包敲门
-fwknop -n ghost-origin
+* **macOS 推荐免配置方式（无需安装 wget，使用自带 curl 动态传入公网 IP）**：
+  ```bash
+  fwknop -n ghost-origin -a $(curl -s4 ifconfig.me)
+  ssh user@YOUR_SERVER_IP
+  ```
+  > 💡 **macOS 报错排查**：若直接运行 `fwknop -n ghost-origin` 提示 `Use --wget-cmd <path> to specify path to the wget command`，原因在于 macOS 未内置 `wget`，而 `RESOLVE_IP_HTTPS` 默认调用 `wget`。使用 `-a $(curl -s4 ifconfig.me)` 可直接通过系统自带的 `curl` 传入本地公网 IP 敲门；或者运行 `brew install wget` 并在 `~/.fwknoprc` 中指定 `WGET_CMD /opt/homebrew/bin/wget`。
 
-# 2. 正常连接 SSH（防火墙为你打开 60 秒后自动关门，已建立的连接不受影响）
-ssh user@YOUR_SERVER_IP
-```
+* **通用方式（Linux 或 macOS 已安装 wget）**：
+  ```bash
+  # 1. 发送加密 SPA 数据包敲门
+  fwknop -n ghost-origin
+
+  # 2. 正常连接 SSH（防火墙为你打开 60 秒后自动关门，已建立的连接不受影响）
+  ssh user@YOUR_SERVER_IP
+  ```
 
 > **一次性单行命令敲门（无需写入配置文件）**：
 > ```bash

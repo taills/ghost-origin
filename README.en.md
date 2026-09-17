@@ -114,7 +114,7 @@ Upon installation, client credentials and configuration are saved to `/root/fwkn
 
 ### Step 1: Install `fwknop` on your client machine
 
-* **macOS**: `brew install fwknop`
+* **macOS**: `brew install fwknop` (or `brew install fwknop wget` if you want automatic IP resolution)
 * **Debian / Ubuntu**: `sudo apt install fwknop-client`
 * **Arch Linux**: `sudo pacman -S fwknop`
 * **Windows**: Download [fwknop-gui](https://www.cipherdyne.org/fwknop/download/) or use WSL
@@ -126,22 +126,33 @@ Append the contents of `/root/fwknop-client.rc` from the server to `~/.fwknoprc`
 ```ini
 [ghost-origin]
 SPA_SERVER          YOUR_SERVER_IP
+SPA_SERVER_PORT     62201
 ACCESS              tcp/22
 KEY_BASE64          <Copy from /root/fwknop-client.rc>
 HMAC_KEY_BASE64     <Copy from /root/fwknop-client.rc>
 USE_HMAC            Y
 RESOLVE_IP_HTTPS    Y
+# On macOS, if you installed wget via Homebrew, uncomment the line below:
+# WGET_CMD          /opt/homebrew/bin/wget
 ```
 
 ### Step 3: Knock and Connect
 
-```bash
-# 1. Send authenticated SPA packet
-fwknop -n ghost-origin
+* **macOS Recommended (No wget required, uses built-in curl to pass public IP)**:
+  ```bash
+  fwknop -n ghost-origin -a $(curl -s4 ifconfig.me)
+  ssh user@YOUR_SERVER_IP
+  ```
+  > 💡 **macOS Troubleshooting**: If running `fwknop -n ghost-origin` shows `Use --wget-cmd <path> to specify path to the wget command`, this is because macOS does not ship with `wget`, which `RESOLVE_IP_HTTPS` invokes by default. Passing `-a $(curl -s4 ifconfig.me)` directly supplies your public IP using macOS's built-in `curl`; alternatively, run `brew install wget` and configure `WGET_CMD /opt/homebrew/bin/wget` in `~/.fwknoprc`.
 
-# 2. Connect via SSH normally (the port closes after 60s; existing sessions stay open)
-ssh user@YOUR_SERVER_IP
-```
+* **Standard Method (Linux or macOS with wget installed)**:
+  ```bash
+  # 1. Send authenticated SPA packet
+  fwknop -n ghost-origin
+
+  # 2. Connect via SSH normally (the port closes after 60s; existing sessions stay open)
+  ssh user@YOUR_SERVER_IP
+  ```
 
 > **One-liner knock without editing config files**:
 > ```bash
