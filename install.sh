@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cf-ufw-quickstart — UFW default-deny + Cloudflare 80/443 + fwknop SPA
+# ghost-origin — UFW default-deny + Cloudflare 80/443 + fwknop SPA
 #
 # Incoming policy:
 #   - allow Cloudflare IPv4/IPv6 -> TCP 80,443
@@ -11,10 +11,10 @@
 # libpcap before the INPUT drop, so the knock port stays dark.
 set -euo pipefail
 
-readonly SCRIPT_NAME="cf-ufw-quickstart"
+readonly SCRIPT_NAME="ghost-origin"
 readonly SCRIPT_VERSION="1.0.0"
 readonly PREFIX="/usr/local"
-readonly CONF_DIR="/etc/cf-ufw-quickstart"
+readonly CONF_DIR="/etc/ghost-origin"
 readonly CONF_FILE="${CONF_DIR}/config"
 readonly UFW_COMMENT="cf-ufw"
 readonly BOOTSTRAP_COMMENT="cf-ufw-bootstrap"
@@ -26,7 +26,7 @@ readonly CF_API_URL="https://api.cloudflare.com/client/v4/ips"
 readonly ACCESS_CONF="/etc/fwknop/access.conf"
 readonly FWKNOPD_CONF="/etc/fwknop/fwknopd.conf"
 readonly KEY_FILE="/root/fwknop-client.rc"
-readonly KEY_BACKUP_DIR="/root/cf-ufw-quickstart-backup"
+readonly KEY_BACKUP_DIR="/root/ghost-origin-backup"
 
 CF_PORTS="${CF_PORTS:-80,443}"
 SPA_PORTS="${SPA_PORTS:-tcp/22}"
@@ -209,8 +209,15 @@ confirm() {
   if [[ "${ASSUME_YES}" -eq 1 || "${DRY_RUN}" -eq 1 ]]; then
     return 0
   fi
-  local ans
-  read -r -p "${prompt} [y/N] " ans
+  local ans=""
+  if [[ -t 0 ]]; then
+    read -r -p "${prompt} [y/N] " ans
+  elif [[ -r /dev/tty ]]; then
+    read -r -p "${prompt} [y/N] " ans < /dev/tty
+  else
+    warn "非交互模式且未指定 -y/--yes，跳过交互。如需静默安装请加 --yes"
+    return 1
+  fi
   [[ "${ans}" == "y" || "${ans}" == "Y" ]]
 }
 
@@ -373,7 +380,8 @@ EOF
 #!/usr/bin/env bash
 # Refresh UFW allow rules for Cloudflare published IP ranges.
 set -euo pipefail
-CONF_FILE="/etc/cf-ufw-quickstart/config"
+CONF_FILE="/etc/ghost-origin/config"
+[[ ! -f "${CONF_FILE}" && -f "/etc/cf-ufw-quickstart/config" ]] && CONF_FILE="/etc/cf-ufw-quickstart/config"
 [[ -f "${CONF_FILE}" ]] && source "${CONF_FILE}"
 
 CF_PORTS="${CF_PORTS:-80,443}"
