@@ -19,6 +19,7 @@ readonly CONF_FILE="${CONF_DIR}/config"
 readonly UFW_COMMENT="cf-ufw"
 readonly BOOTSTRAP_COMMENT="cf-ufw-bootstrap"
 readonly FWKNOP_COMMENT="fwknop"
+readonly WHITELIST_COMMENT="cf-ufw-whitelist"
 readonly CF_IPV4_URL="https://www.cloudflare.com/ips-v4"
 readonly CF_IPV6_URL="https://www.cloudflare.com/ips-v6"
 readonly CF_API_URL="https://api.cloudflare.com/client/v4/ips"
@@ -33,6 +34,7 @@ SSH_PORT="${SSH_PORT:-22}"
 FW_ACCESS_TIMEOUT="${FW_ACCESS_TIMEOUT:-60}"
 SPA_UDP_PORT="${SPA_UDP_PORT:-62201}"
 ALLOW_SSH_FROM="${ALLOW_SSH_FROM:-}"
+WHITELIST_IPS="${WHITELIST_IPS:-}"
 BOOTSTRAP_SSH="${BOOTSTRAP_SSH:-auto}"
 ASSUME_YES=0
 DRY_RUN=0
@@ -45,6 +47,10 @@ CMD="install"
 FWKNOP_UNIT="fwknop-server"
 KEY_BASE64=""
 HMAC_KEY_BASE64=""
+TARGET_IP=""
+TARGET_PORT=""
+TARGET_PROTO=""
+TARGET_NOTE=""
 
 log()  { printf '[%s] %s\n' "${SCRIPT_NAME}" "$*"; }
 warn() { printf '[%s] WARN: %s\n' "${SCRIPT_NAME}" "$*" >&2; }
@@ -69,11 +75,20 @@ usage() {
 ${SCRIPT_NAME} ${SCRIPT_VERSION}
 
 用法:
-  $0 install [选项]     安装并配置 ufw + fwknop（默认）
-  $0 update-cf          刷新 Cloudflare IP 放行规则
-  $0 status             查看防火墙 / fwknop 状态
-  $0 print-client       打印敲门客户端配置
-  $0 uninstall          移除本脚本写入的规则与辅助文件（不关闭 UFW）
+  $0 install [选项]                 安装并配置 ufw + fwknop（默认）
+  $0 allow-ip <IP[/CIDR]> [选项]     添加白名单 IP（放行访问，免敲门）
+  $0 del-ip <IP[/CIDR]> [选项]       删除白名单 IP 规则
+  $0 list-ip                        查看当前白名单 IP 列表
+  $0 update-cf                      刷新 Cloudflare IP 放行规则
+  $0 status                         查看防火墙 / fwknop 状态
+  $0 print-client                   打印敲门客户端配置
+  $0 uninstall                      移除本脚本写入的规则与辅助文件（不关闭 UFW）
+
+白名单管理选项 (allow-ip / del-ip):
+  --ip IP                    要操作的 IP 或 CIDR（也可直接作为位置参数）
+  --port, --ports PORT       指定放行端口（如 22 或 80,443；默认全端口 any）
+  --proto PROTO              指定协议（tcp / udp / any；默认 tcp，全端口时默认 any）
+  --comment, --note NOTE     自定义备注（附加在 ${WHITELIST_COMMENT}: 之后）
 
 安装选项:
   --cf-ports 80,443          Cloudflare 放行的 TCP 端口（默认 80,443）
@@ -81,6 +96,7 @@ ${SCRIPT_NAME} ${SCRIPT_VERSION}
   --ssh-port 22              用于防锁死的 SSH 端口
   --timeout 60               SPA 打开时长（秒）
   --allow-ssh-from IP        永久放行该 IP 的 SSH（不推荐，仅应急）
+  --whitelist-ips "IP1,IP2"  安装时初始添加的白名单 IP 列表
   --bootstrap-ssh            从当前 SSH 来源 IP 临时放行 SSH（默认：检测到 SSH 则开启）
   --no-bootstrap-ssh         不添加 SSH 应急规则（可能把自己锁在门外）
   --no-ufw-enable            只写规则，不执行 ufw --force enable
@@ -92,7 +108,7 @@ ${SCRIPT_NAME} ${SCRIPT_VERSION}
   --dry-run                  只打印将执行的命令
   -h, --help                 帮助
 
-环境变量可覆盖同名默认值: CF_PORTS SPA_PORTS SSH_PORT FW_ACCESS_TIMEOUT ALLOW_SSH_FROM
+环境变量可覆盖同名默认值: CF_PORTS SPA_PORTS SSH_PORT FW_ACCESS_TIMEOUT ALLOW_SSH_FROM WHITELIST_IPS
 EOF
 }
 
@@ -103,11 +119,24 @@ parse_args() {
     shift
   fi
   case "${CMD}" in
-    install|update-cf|status|print-client|uninstall|help|-h|--help) ;;
+    install|update-cf|status|print-client|uninstall|allow-ip|add-ip|add-whitelist|del-ip|delete-ip|remove-ip|whitelist-del|list-ip|list-whitelist|whitelist|help|-h|--help) ;;
     *) die "未知子命令: ${CMD}" ;;
+  esac
+  case "${CMD}" in
+    allow-ip|add-ip|add-whitelist|del-ip|delete-ip|remove-ip|whitelist-del)
+      if [[ "${#}" -gt 0 && "$1" != -* ]]; then
+        TARGET_IP="$1"
+        shift
+      fi
+      ;;
   esac
   while [[ "${#}" -gt 0 ]]; do
     case "$1" in
+      --ip) TARGET_IP="${2:?}"; shift 2 ;;
+      --port|--ports) TARGET_PORT="${2:?}"; shift 2 ;;
+      --proto) TARGET_PROTO="${2:?}"; shift 2 ;;
+      --comment|--note) TARGET_NOTE="${2:?}"; shift 2 ;;
+      --whitelist-ips) WHITELIST_IPS="${2:?}"; shift 2 ;;
       --cf-ports) CF_PORTS="${2:?}"; shift 2 ;;
       --spa-ports) SPA_PORTS="${2:?}"; shift 2 ;;
       --ssh-port) SSH_PORT="${2:?}"; shift 2 ;;
@@ -671,6 +700,187 @@ apply_bootstrap_ssh() {
   fi
 }
 
+apply_initial_whitelist() {
+  [[ -n "${WHITELIST_IPS}" ]] || return 0
+  log "配置安装初始白名单 IP: ${WHITELIST_IPS}"
+  local saved_ip="${TARGET_IP}" saved_port="${TARGET_PORT}" saved_proto="${TARGET_PROTO}" saved_note="${TARGET_NOTE}"
+  TARGET_IP="${WHITELIST_IPS}"
+  TARGET_PORT=""
+  TARGET_PROTO=""
+  TARGET_NOTE="initial"
+  cmd_allow_ip
+  TARGET_IP="${saved_ip}"
+  TARGET_PORT="${saved_port}"
+  TARGET_PROTO="${saved_proto}"
+  TARGET_NOTE="${saved_note}"
+}
+
+cmd_allow_ip() {
+  need_root
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    have_cmd ufw || die "ufw 未安装"
+  fi
+  [[ -n "${TARGET_IP}" ]] || die "缺少 IP 地址。用法: $0 allow-ip <IP[/CIDR]> [--port <端口>] [--proto <协议>] [--comment <备注>]"
+
+  local proto="${TARGET_PROTO:-}"
+  local ports="${TARGET_PORT:-}"
+  local note="${TARGET_NOTE:-}"
+
+  local comment="${WHITELIST_COMMENT}"
+  if [[ -n "${note}" ]]; then
+    comment="${WHITELIST_COMMENT}:${note}"
+  fi
+
+  IFS=',' read -ra ip_list <<< "${TARGET_IP}"
+  for ip in "${ip_list[@]}"; do
+    ip="${ip// /}"
+    [[ -n "${ip}" ]] || continue
+    is_ipv4 "${ip}" || is_ipv6 "${ip}" || die "非法的 IP/CIDR 地址: ${ip}"
+
+    if [[ -z "${ports}" || "${ports}" == "all" || "${ports}" == "any" ]]; then
+      log "添加白名单规则: 允许 ${ip} 访问所有端口"
+      run ufw allow from "${ip}" comment "${comment}"
+    else
+      local use_proto="${proto:-tcp}"
+      use_proto="${use_proto,,}"
+      IFS=',' read -ra plist <<< "${ports}"
+      for p in "${plist[@]}"; do
+        p="${p// /}"
+        [[ "${p}" =~ ^[0-9]+(:[0-9]+)?$ ]] || die "非法端口格式: ${p}（支持单端口如 22 或端口范围如 8000:8080）"
+        if [[ "${use_proto}" == "any" || "${use_proto}" == "all" ]]; then
+          log "添加白名单规则: 允许 ${ip} 访问端口 ${p} (所有协议)"
+          run ufw allow from "${ip}" to any port "${p}" comment "${comment}"
+        else
+          log "添加白名单规则: 允许 ${ip} 访问端口 ${p}/${use_proto}"
+          run ufw allow proto "${use_proto}" from "${ip}" to any port "${p}" comment "${comment}"
+        fi
+      done
+    fi
+  done
+  log "白名单规则添加完成。"
+}
+
+cmd_del_ip() {
+  need_root
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    have_cmd ufw || die "ufw 未安装"
+  fi
+  [[ -n "${TARGET_IP}" ]] || die "缺少要删除的 IP 地址。用法: $0 del-ip <IP[/CIDR]> [--port <端口>]"
+
+  local target_port="${TARGET_PORT:-}"
+  [[ "${target_port}" == "all" || "${target_port}" == "any" ]] && target_port=""
+
+  IFS=',' read -ra ip_list <<< "${TARGET_IP}"
+  for ip in "${ip_list[@]}"; do
+    ip="${ip// /}"
+    [[ -n "${ip}" ]] || continue
+    is_ipv4 "${ip}" || is_ipv6 "${ip}" || die "非法的 IP/CIDR 地址: ${ip}"
+
+    log "检索 IP [${ip}] ${target_port:+端口 [${target_port}] }相关的白名单规则..."
+
+    mapfile -t rule_nums < <(ufw status numbered 2>/dev/null | awk \
+      -v tip="${ip}" \
+      -v tport="${target_port}" \
+      -v cpfx="${WHITELIST_COMMENT}" \
+      -v bpfx="${BOOTSTRAP_COMMENT}" '
+      {
+        line = $0
+        if (!match(line, /\[[[:space:]]*([0-9]+)\]/)) next
+        rnum = substr(line, RSTART, RLENGTH)
+        gsub(/[^0-9]/, "", rnum)
+
+        comm = ""
+        if (match(line, /#[[:space:]]*.*/)) {
+          comm = substr(line, RSTART + 1)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", comm)
+          line = substr(line, 1, RSTART - 1)
+        }
+
+        if (index(comm, cpfx) != 1 && index(comm, bpfx) != 1) next
+
+        gsub(/^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]*/, "", line)
+        gsub(/[[:space:]]+$/, "", line)
+
+        n = split(line, a, /[[:space:]]+/)
+        if (n < 3) next
+        from_ip = a[n]
+
+        to_part = ""
+        for (i = 1; i <= n - 2; i++) {
+          if (a[i] == "ALLOW" || a[i] == "DENY" || a[i] == "LIMIT") break
+          to_part = (to_part == "" ? a[i] : to_part " " a[i])
+        }
+
+        if (from_ip != tip) next
+        if (tport != "" && index(to_part, tport) == 0) next
+
+        print rnum
+      }' | sort -nr)
+
+    if [[ "${#rule_nums[@]}" -eq 0 ]]; then
+      warn "未找到匹配 IP [${ip}] ${target_port:+端口 [${target_port}] }的白名单规则。"
+      continue
+    fi
+
+    log "找到 ${#rule_nums[@]} 条规则，开始删除..."
+    for num in "${rule_nums[@]}"; do
+      log "删除 UFW 规则 #${num}"
+      run ufw --force delete "${num}" >/dev/null
+    done
+    log "已成功删除 ${ip} 对应的白名单规则。"
+  done
+}
+
+cmd_list_ip() {
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    have_cmd ufw || die "ufw 未安装"
+  fi
+  echo "=== 当前 UFW 白名单 IP 规则 ==="
+  printf "%-6s  %-22s  %-28s  %s\n" "规则号" "目标端口/协议" "来源 IP/网段" "备注"
+  printf "%-6s  %-22s  %-28s  %s\n" "------" "-------------" "------------" "----"
+  local count=0
+  while IFS=$'\t' read -r rnum to_part from_ip comm; do
+    [[ -n "${rnum}" ]] || continue
+    printf "[%-4s]  %-22s  %-28s  %s\n" "${rnum}" "${to_part}" "${from_ip}" "${comm}"
+    count=$((count + 1))
+  done < <(ufw status numbered 2>/dev/null | awk \
+    -v cpfx="${WHITELIST_COMMENT}" \
+    -v bpfx="${BOOTSTRAP_COMMENT}" '
+    {
+      line = $0
+      if (!match(line, /\[[[:space:]]*([0-9]+)\]/)) next
+      rnum = substr(line, RSTART, RLENGTH)
+      gsub(/[^0-9]/, "", rnum)
+
+      comm = ""
+      if (match(line, /#[[:space:]]*.*/)) {
+        comm = substr(line, RSTART + 1)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", comm)
+        line = substr(line, 1, RSTART - 1)
+      }
+
+      if (index(comm, cpfx) != 1 && index(comm, bpfx) != 1) next
+
+      gsub(/^[[:space:]]*\[[[:space:]]*[0-9]+\][[:space:]]*/, "", line)
+      gsub(/[[:space:]]+$/, "", line)
+
+      n = split(line, a, /[[:space:]]+/)
+      if (n < 3) next
+      from_ip = a[n]
+
+      to_part = ""
+      for (i = 1; i <= n - 2; i++) {
+        if (a[i] == "ALLOW" || a[i] == "DENY" || a[i] == "LIMIT") break
+        to_part = (to_part == "" ? a[i] : to_part " " a[i])
+      }
+
+      print rnum "\t" to_part "\t" from_ip "\t" comm
+    }')
+
+  echo
+  echo "共计 ${count} 条白名单规则。"
+}
+
 enable_services() {
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     log "将启用 ${FWKNOP_UNIT} 与 UFW"
@@ -729,6 +939,8 @@ cmd_status() {
   echo "=== Cloudflare 规则条数 ==="
   ufw status | grep -c "# ${UFW_COMMENT}" || true
   echo
+  cmd_list_ip
+  echo
   detect_fwknop_unit
   echo "=== ${FWKNOP_UNIT} ==="
   systemctl status "${FWKNOP_UNIT}" --no-pager -l || true
@@ -760,6 +972,7 @@ cmd_uninstall() {
     ufw_delete_by_comment "${UFW_COMMENT}"
     ufw_delete_by_comment "${BOOTSTRAP_COMMENT}"
     ufw_delete_by_comment "${FWKNOP_COMMENT}"
+    ufw_delete_by_comment "${WHITELIST_COMMENT}"
   fi
   run rm -f /etc/systemd/system/cf-ufw-update.service \
             /etc/systemd/system/cf-ufw-update.timer \
@@ -806,6 +1019,7 @@ EOF
   write_client_rc
   configure_ufw_policy
   apply_bootstrap_ssh
+  apply_initial_whitelist
   enable_services
   print_summary
 }
@@ -819,6 +1033,9 @@ main() {
     status) cmd_status ;;
     print-client) cmd_print_client ;;
     uninstall) cmd_uninstall ;;
+    allow-ip|add-ip|add-whitelist) cmd_allow_ip ;;
+    del-ip|delete-ip|remove-ip|whitelist-del) cmd_del_ip ;;
+    list-ip|list-whitelist|whitelist) cmd_list_ip ;;
   esac
 }
 
