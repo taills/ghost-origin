@@ -67,7 +67,26 @@ run() {
 }
 
 need_root() {
-  [[ "${EUID}" -eq 0 ]] || die "请用 root 运行: sudo $0 ..."
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    return 0
+  fi
+  if [[ "${EUID}" -ne 0 ]]; then
+    cat <<EOF >&2
+======================================================================
+ [错误] 权限不足：本脚本涉及防火墙规则 (UFW) 与系统服务配置，必须以 root 权限运行！
+======================================================================
+ 当前运行身份: UID=$(id -u) ($(id -un 2>/dev/null || echo "non-root"))
+
+ 运行建议：
+   1) 使用 sudo 运行：
+      sudo $0 ${*:-${CMD}}
+   2) 或者直接切换到 root 环境（推荐，之后无需每次加 sudo）：
+      sudo -i
+      $0 ${*:-${CMD}}
+======================================================================
+EOF
+    exit 1
+  fi
 }
 
 usage() {
@@ -1035,9 +1054,14 @@ EOF
 main() {
   parse_args "$@"
   case "${CMD}" in
-    help|-h|--help) usage ;;
+    help|-h|--help) usage; exit 0 ;;
+  esac
+
+  need_root "$@"
+
+  case "${CMD}" in
     install) cmd_install ;;
-    update-cf) need_root; load_conf; [[ -x "${PREFIX}/sbin/cf-ufw-update" ]] || die "尚未安装，请先 $0 install"; "${PREFIX}/sbin/cf-ufw-update" ;;
+    update-cf) load_conf; [[ -x "${PREFIX}/sbin/cf-ufw-update" ]] || die "尚未安装，请先 $0 install"; "${PREFIX}/sbin/cf-ufw-update" ;;
     status) cmd_status ;;
     print-client) cmd_print_client ;;
     uninstall) cmd_uninstall ;;

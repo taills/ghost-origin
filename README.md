@@ -72,6 +72,8 @@ sudo ./install.sh install --yes
 
 > ⚠️ 默认安装时会执行 `ufw --force reset` 以确保建立纯净的零信任策略。若机器上已有其他重要 UFW 规则，请务必添加 `--keep-ufw-rules` 选项。
 
+> 💡 **权限说明**：本工具已在入口处内置 root 权限检测。你可以使用 `sudo ./install.sh <子命令>`，或直接执行 `sudo -i` 切换到 root 环境后运行（免去每次重复敲 `sudo`）。非 root 运行时会自动拦截、提示并退出，避免执行半途报错。
+
 ---
 
 ## 🔑 客户端敲门访问（SPA）

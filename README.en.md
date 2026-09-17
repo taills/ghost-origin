@@ -72,6 +72,8 @@ sudo ./install.sh install --yes
 
 > ⚠️ By default, the installer runs `ufw --force reset` to guarantee a clean zero-trust policy. If you already have critical UFW rules configured, add `--keep-ufw-rules`.
 
+> 💡 **Privilege Note**: The script enforces a built-in root check at the main entry point. You can either use `sudo ./install.sh <command>` or switch to a root shell (`sudo -i`) once to run commands directly without repeating `sudo`. Non-root execution is caught upfront with a helpful prompt before any actions take place.
+
 ---
 
 ## 🔑 Client SPA Knocking (fwknop)

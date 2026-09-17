@@ -97,4 +97,11 @@ if "${TMP}/runner.sh" install --dry-run -y --spa-ports "bad_proto" >/dev/null 2>
   exit 1
 fi
 
+echo "=== 8. Test non-root prompt & exit on install.sh ==="
+out="$(./install.sh status 2>&1 || true)"
+if ! grep -q "权限不足" <<< "${out}"; then
+  echo "Expected permission denied prompt in install.sh, got: ${out}" >&2
+  exit 1
+fi
+
 echo "=== All tests passed cleanly! ==="
