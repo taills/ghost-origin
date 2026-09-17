@@ -12,7 +12,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="ghost-origin"
-readonly SCRIPT_VERSION="1.2.0"
+readonly SCRIPT_VERSION="1.2.1"
 readonly SCRIPT_UPDATED_AT="2026-09-17"
 readonly PREFIX="/usr/local"
 readonly CONF_DIR="/etc/ghost-origin"
@@ -213,6 +213,19 @@ current_ssh_ip() {
     ip="${SSH_CLIENT%% *}"
   fi
   printf '%s\n' "${ip}"
+}
+
+get_server_ip() {
+  local ip=""
+  ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
+  if [[ -z "${ip}" || "${ip}" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.) ]]; then
+    local ext_ip=""
+    ext_ip="$(curl -fsSL4 --max-time 3 https://api.ipify.org 2>/dev/null || curl -fsSL4 --max-time 3 https://ifconfig.me 2>/dev/null || true)"
+    if [[ -n "${ext_ip}" && "${ext_ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      ip="${ext_ip}"
+    fi
+  fi
+  printf '%s\n' "${ip:-YOUR_SERVER_IP}"
 }
 
 is_ipv4() { [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/([0-9]|[12][0-9]|3[0-2]))?$ ]]; }
@@ -817,25 +830,24 @@ start_fwknop_service() {
 
 write_client_rc() {
   local server_ip
-  server_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')"
-  server_ip="${server_ip:-YOUR_SERVER_IP}"
+  server_ip="$(get_server_ip)"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     log "将写入客户端配置 ${KEY_FILE}"
     return 0
   fi
   cat > "${KEY_FILE}" <<EOF
 # fwknop client stanza — copy to ~/.fwknoprc on your laptop
-# 先敲门再 SSH:  fwknop -n ${SCRIPT_NAME} && ssh user@${server_ip}
+# 先敲门再 SSH:  fwknop -n ${server_ip} && ssh user@${server_ip}
 #
 # macOS 说明:
 #   如果提示 'Use --wget-cmd <path> to specify path to the wget command':
 #   方法 A (免装 wget): 直接用 curl 传本地公网 IP 敲门:
-#       fwknop -n ${SCRIPT_NAME} -a \$(curl -s4 ifconfig.me)
+#       fwknop -n ${server_ip} -a \$(curl -s4 ifconfig.me)
 #   方法 B (安装 wget): 执行 'brew install wget'，并在下方配置中添加:
 #       WGET_CMD    /opt/homebrew/bin/wget   # Apple Silicon Mac
 #       # 或 WGET_CMD /usr/local/bin/wget    # Intel Mac
 
-[${SCRIPT_NAME}]
+[${server_ip}]
 SPA_SERVER          ${server_ip}
 SPA_SERVER_PORT     ${SPA_UDP_PORT}
 ACCESS              ${SPA_PORTS%%,*}
@@ -1110,6 +1122,8 @@ enable_services() {
 }
 
 print_summary() {
+  local server_ip
+  server_ip="$(get_server_ip)"
   cat <<EOF
 
 ======== 安装完成 ========
@@ -1121,11 +1135,11 @@ SPA 可请求打开: ${SPA_PORTS} ，时长 ${FW_ACCESS_TIMEOUT}s
 客户端（需安装 fwknop）:
 
   # 把 ${KEY_FILE} 合并进笔记本上的 ~/.fwknoprc 后:
-  fwknop -n ${SCRIPT_NAME}
-  ssh USER@SERVER
+  fwknop -n ${server_ip}
+  ssh USER@${server_ip}
 
   # 或一次性命令（把密钥换成 ${KEY_FILE} 里的值）:
-  fwknop -A ${SPA_PORTS%%,*} -R -D SERVER --use-hmac \\
+  fwknop -A ${SPA_PORTS%%,*} -R -D ${server_ip} --use-hmac \\
     --key-base64 'KEY' --hmac-key-base64 'HMAC'
 
 日常维护:
@@ -1159,7 +1173,12 @@ cmd_status() {
 }
 
 cmd_print_client() {
+  local server_ip
+  server_ip="$(get_server_ip)"
   if [[ -f "${KEY_FILE}" ]]; then
+    if [[ "${server_ip}" != "YOUR_SERVER_IP" ]]; then
+      sed -i -E "s/^\\[(ghost-origin|cf-ufw-quickstart)\\]/[${server_ip}]/; s/fwknop -n (ghost-origin|cf-ufw-quickstart)/fwknop -n ${server_ip}/g; s/SPA_SERVER[[:space:]]+(YOUR_SERVER_IP|ghost-origin)/SPA_SERVER          ${server_ip}/g" "${KEY_FILE}"
+    fi
     cat "${KEY_FILE}"
   elif [[ -f "/etc/fwknop/${SCRIPT_NAME}.keys" ]]; then
     cat "/etc/fwknop/${SCRIPT_NAME}.keys"

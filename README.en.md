@@ -121,10 +121,10 @@ Upon installation, client credentials and configuration are saved to `/root/fwkn
 
 ### Step 2: Configure Client Credentials
 
-Append the contents of `/root/fwknop-client.rc` from the server to `~/.fwknoprc` on your laptop:
+Append the contents of `/root/fwknop-client.rc` from the server to `~/.fwknoprc` on your laptop. **The stanza is automatically named after the server's public IP address** (e.g. `[192.0.2.1]`), avoiding naming conflicts when managing multiple servers:
 
 ```ini
-[ghost-origin]
+[YOUR_SERVER_IP]
 SPA_SERVER          YOUR_SERVER_IP
 SPA_SERVER_PORT     62201
 ACCESS              tcp/22
@@ -140,15 +140,15 @@ RESOLVE_IP_HTTPS    Y
 
 * **macOS Recommended (No wget required, uses built-in curl to pass public IP)**:
   ```bash
-  fwknop -n ghost-origin -a $(curl -s4 ifconfig.me)
+  fwknop -n YOUR_SERVER_IP -a $(curl -s4 ifconfig.me)
   ssh user@YOUR_SERVER_IP
   ```
-  > 💡 **macOS Troubleshooting**: If running `fwknop -n ghost-origin` shows `Use --wget-cmd <path> to specify path to the wget command`, this is because macOS does not ship with `wget`, which `RESOLVE_IP_HTTPS` invokes by default. Passing `-a $(curl -s4 ifconfig.me)` directly supplies your public IP using macOS's built-in `curl`; alternatively, run `brew install wget` and configure `WGET_CMD /opt/homebrew/bin/wget` in `~/.fwknoprc`.
+  > 💡 **macOS Troubleshooting**: If running `fwknop -n YOUR_SERVER_IP` shows `Use --wget-cmd <path> to specify path to the wget command`, this is because macOS does not ship with `wget`, which `RESOLVE_IP_HTTPS` invokes by default. Passing `-a $(curl -s4 ifconfig.me)` directly supplies your public IP using macOS's built-in `curl`; alternatively, run `brew install wget` and configure `WGET_CMD /opt/homebrew/bin/wget` in `~/.fwknoprc`.
 
 * **Standard Method (Linux or macOS with wget installed)**:
   ```bash
   # 1. Send authenticated SPA packet
-  fwknop -n ghost-origin
+  fwknop -n YOUR_SERVER_IP
 
   # 2. Connect via SSH normally (the port closes after 60s; existing sessions stay open)
   ssh user@YOUR_SERVER_IP
@@ -256,7 +256,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-Current constants: `SCRIPT_VERSION="1.2.0"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
+Current constants: `SCRIPT_VERSION="1.2.1"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
 
 `update` downloads from this repository's `main` branch, checks for nonempty content, valid Bash syntax and the entry-point marker, then atomically replaces `/usr/bin/ghost-origin`. Failures preserve the existing command. It does not run `install` or upgrade helper scripts, dependencies, configuration, keys or firewall rules. `update-cf` only refreshes Cloudflare CIDRs. This trusts HTTPS and the repository; syntax checks are not signature verification. The command always fetches main and does not compare version ordering.
 

@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory() as tmp:
         assert not list(folder.glob('.ghost-origin.*'))
 for flag in ['--version', 'version', '-v']:
     output = subprocess.check_output(['bash', str(ROOT / 'ghost-origin.sh'), flag], text=True)
-    assert '1.2.0' in output and '2026-09-17' in output
+    assert '1.2.1' in output and '2026-09-17' in output
 subprocess.run(['bash', str(ROOT / 'ghost-origin.sh'), 'update', '--dry-run'], check=True)
 for filename in ['README.md', 'README.en.md']:
     text = (ROOT / filename).read_text()

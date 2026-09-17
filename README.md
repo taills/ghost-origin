@@ -121,10 +121,10 @@ ghost-origin update-cf
 
 ### 步骤 2：配置客户端
 
-将服务器 `/root/fwknop-client.rc` 的内容追加到你本地电脑的 `~/.fwknoprc` 中：
+将服务器 `/root/fwknop-client.rc` 的内容追加到你本地电脑的 `~/.fwknoprc` 中。**配置段名称使用该服务器的实际 IP**（例如 `[192.0.2.1]`），多台服务器互不冲突：
 
 ```ini
-[ghost-origin]
+[YOUR_SERVER_IP]
 SPA_SERVER          YOUR_SERVER_IP
 SPA_SERVER_PORT     62201
 ACCESS              tcp/22
@@ -140,15 +140,15 @@ RESOLVE_IP_HTTPS    Y
 
 * **macOS 推荐免配置方式（无需安装 wget，使用自带 curl 动态传入公网 IP）**：
   ```bash
-  fwknop -n ghost-origin -a $(curl -s4 ifconfig.me)
+  fwknop -n YOUR_SERVER_IP -a $(curl -s4 ifconfig.me)
   ssh user@YOUR_SERVER_IP
   ```
-  > 💡 **macOS 报错排查**：若直接运行 `fwknop -n ghost-origin` 提示 `Use --wget-cmd <path> to specify path to the wget command`，原因在于 macOS 未内置 `wget`，而 `RESOLVE_IP_HTTPS` 默认调用 `wget`。使用 `-a $(curl -s4 ifconfig.me)` 可直接通过系统自带的 `curl` 传入本地公网 IP 敲门；或者运行 `brew install wget` 并在 `~/.fwknoprc` 中指定 `WGET_CMD /opt/homebrew/bin/wget`。
+  > 💡 **macOS 报错排查**：若直接运行 `fwknop -n YOUR_SERVER_IP` 提示 `Use --wget-cmd <path> to specify path to the wget command`，原因在于 macOS 未内置 `wget`，而 `RESOLVE_IP_HTTPS` 默认调用 `wget`。使用 `-a $(curl -s4 ifconfig.me)` 可直接通过系统自带的 `curl` 传入本地公网 IP 敲门；或者运行 `brew install wget` 并在 `~/.fwknoprc` 中指定 `WGET_CMD /opt/homebrew/bin/wget`。
 
 * **通用方式（Linux 或 macOS 已安装 wget）**：
   ```bash
   # 1. 发送加密 SPA 数据包敲门
-  fwknop -n ghost-origin
+  fwknop -n YOUR_SERVER_IP
 
   # 2. 正常连接 SSH（防火墙为你打开 60 秒后自动关门，已建立的连接不受影响）
   ssh user@YOUR_SERVER_IP
@@ -256,7 +256,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-当前版本常量为 `SCRIPT_VERSION="1.2.0"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
+当前版本常量为 `SCRIPT_VERSION="1.2.1"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
 
 `update` 从本仓库 `main` 分支下载脚本，检查非空、Bash 语法及入口标记后原子替换 `/usr/bin/ghost-origin`。失败时保留旧命令。该操作不执行 `install`，不更新辅助脚本、依赖、配置、密钥或防火墙规则；`update-cf` 仅同步 Cloudflare 网段，与脚本升级不同。这里依赖 HTTPS 和仓库可信性，语法检查不等于签名验证；始终获取 main，不进行版本大小比较。
 
