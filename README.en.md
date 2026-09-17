@@ -70,6 +70,17 @@ Local installation copies the running script. A `curl | bash` installation has n
 
 All post-install management examples below assume a root shell. Regular users can prefix the entire command with `sudo`.
 
+### Existing Port-Knocking Software Preflight
+
+Before installation, the script checks APT packages, executables in PATH, and systemd services:
+
+- **Existing knockd**: asks separately before removal. After approval, backs up `/etc/knockd.conf` and `/etc/default/knockd`, stops and disables the service if present, and runs `apt-get remove`. No purge or autoremove is performed. The old knocking method will stop working; review existing firewall rules separately.
+- **Existing fwknop**: asks separately before upgrading. After approval, backs up `access.conf` and `fwknopd.conf`, then uses `apt-get install --only-upgrade` for installed `fwknop-server` / `fwknop-client` packages. This selects the configured APT repository candidate, not necessarily the latest upstream release. An up-to-date package is unchanged; installation then applies this project's configuration and restarts the service.
+- All decisions are collected before system changes. Declining either cancels installation. `--yes` does **not** bypass these prompts. Without a controlling terminal the script exits; rerun interactively. `--dry-run` only previews the plan.
+- Detected unmanaged installations require manual handling; unknown files are not deleted. `--skip-apt` is rejected when existing software requires removal or upgrade.
+
+Backups are stored in `/root/ghost-origin-backup/`. A failed upgrade or removal stops installation before firewall configuration; completed package operations are not automatically rolled back. Keep console access or another recovery path when administering remotely.
+
 ### Installation Options
 
 | Option | Description | Default |
@@ -232,7 +243,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-Current constants: `SCRIPT_VERSION="1.1.0"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
+Current constants: `SCRIPT_VERSION="1.1.1"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
 
 `update` downloads from this repository's `main` branch, checks for nonempty content, valid Bash syntax and the entry-point marker, then atomically replaces `/usr/bin/ghost-origin`. Failures preserve the existing command. It does not run `install` or upgrade helper scripts, dependencies, configuration, keys or firewall rules. `update-cf` only refreshes Cloudflare CIDRs. This trusts HTTPS and the repository; syntax checks are not signature verification. The command always fetches main and does not compare version ordering.
 

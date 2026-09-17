@@ -12,7 +12,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="ghost-origin"
-readonly SCRIPT_VERSION="1.1.0"
+readonly SCRIPT_VERSION="1.1.1"
 readonly SCRIPT_UPDATED_AT="2026-09-17"
 readonly PREFIX="/usr/local"
 readonly CONF_DIR="/etc/ghost-origin"
@@ -124,12 +124,14 @@ ${SCRIPT_NAME} ${SCRIPT_VERSION} (updated: ${SCRIPT_UPDATED_AT})
   --no-ufw-enable            只写规则，不执行 ufw --force enable
   --keep-ufw-rules           不执行 ufw reset（保留现有规则，仍会改默认策略）
   --no-ipv6                  不处理 IPv6 / 不放行 Cloudflare IPv6
-  --skip-apt                 跳过 apt 安装
+  --skip-apt                 跳过 apt 安装（检测到已有敲门软件时拒绝继续）
   --force-keys               重新生成 fwknop 密钥（覆盖旧密钥）
   --yes, -y                  非交互
   --dry-run                  只打印将执行的命令
   -h, --help                 帮助
 
+已有 knockd/fwknop 时需在终端单独确认移除/升级，--yes 不跳过。
+拒绝操作会取消安装；APT remove 保留 knockd 配置，不执行 purge。
 环境变量可覆盖同名默认值: CF_PORTS SPA_PORTS SSH_PORT FW_ACCESS_TIMEOUT ALLOW_SSH_FROM WHITELIST_IPS
 EOF
 }
@@ -251,12 +253,87 @@ backup_file() {
   run cp -a "${src}" "${KEY_BACKUP_DIR}/$(basename "${src}").$(date +%Y%m%d%H%M%S)"
 }
 
+# Preflight is read-only until every decision and the installation confirmation
+# have been accepted. Never treat --yes as consent to replace existing tools.
+REMOVE_KNOCKD=0
+FWKNOP_UPGRADE_PACKAGES=()
+
+package_installed() {
+  local state
+  state="$(dpkg-query -W -f='${Status}' "$1" 2>/dev/null)" || return 1
+  [[ "${state}" == "install ok installed" ]]
+}
+
+service_present() {
+  local state
+  state="$(systemctl show "$1" --property=LoadState --value 2>/dev/null)" || return 1
+  [[ -n "${state}" && "${state}" != "not-found" ]]
+}
+
+confirm_existing_tool() {
+  # Use the controlling terminal: stdin may contain the script from curl.
+  local answer=""
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    log "DRY-RUN: 实际安装时必须确认：$1"
+    return 0
+  fi
+  if ! { printf '%s [y/N] ' "$1" > /dev/tty && read -r answer < /dev/tty; } 2>/dev/null; then
+    warn "现有软件需要单独确认（--yes 不跳过）；请在交互终端重新运行。"
+    return 1
+  fi
+  [[ "${answer}" == "y" || "${answer}" == "Y" ]]
+}
+
+preflight_existing_tools() {
+  local knockd_found=0 fwknop_found=0 package
+  REMOVE_KNOCKD=0
+  FWKNOP_UPGRADE_PACKAGES=()
+  if package_installed knockd || have_cmd knockd || service_present knockd.service; then
+    knockd_found=1
+  fi
+  for package in fwknop-server fwknop-client; do
+    if package_installed "${package}"; then
+      FWKNOP_UPGRADE_PACKAGES+=("${package}")
+      fwknop_found=1
+    fi
+  done
+  if have_cmd fwknop || have_cmd fwknopd || service_present fwknop-server.service || service_present fwknopd.service; then
+    fwknop_found=1
+  fi
+  if (( knockd_found || fwknop_found )); then
+    [[ "${SKIP_APT}" -eq 0 ]] || die "检测到已有敲门软件；--skip-apt 无法完成移除/升级，请去掉该选项后重试。"
+  fi
+  if (( knockd_found )); then
+    package_installed knockd || die "检测到非 APT 管理的 knockd，请先手动处理其程序和服务；不会自动删除未知文件。"
+    confirm_existing_tool "检测到 knockd。是否备份配置并移除 knockd（旧敲门方式将失效）？" || die "未同意移除 knockd，安装已取消，未修改系统。"
+    REMOVE_KNOCKD=1
+  fi
+  if (( fwknop_found )); then
+    (( ${#FWKNOP_UPGRADE_PACKAGES[@]} > 0 )) || die "检测到非 APT 管理的 fwknop，请先手动处理后重试。"
+    confirm_existing_tool "检测到 fwknop。是否备份配置、升级至 APT 候选版本并继续应用本项目配置（可能重启服务）？" || die "未同意升级 fwknop，安装已取消，未修改系统。"
+  fi
+}
+
 install_packages() {
   [[ "${SKIP_APT}" -eq 1 ]] && return 0
   have_cmd apt-get || die "当前仅支持 Debian/Ubuntu（需要 apt-get）"
   export DEBIAN_FRONTEND=noninteractive
   log "安装 ufw / fwknop-server / fwknop-client ..."
   run apt-get update -y
+  if (( ${#FWKNOP_UPGRADE_PACKAGES[@]} > 0 )); then
+    backup_file "${ACCESS_CONF}"
+    backup_file "${FWKNOPD_CONF}"
+    run apt-get install -y --only-upgrade "${FWKNOP_UPGRADE_PACKAGES[@]}"
+  fi
+  if [[ "${REMOVE_KNOCKD}" -eq 1 ]]; then
+    backup_file /etc/knockd.conf
+    backup_file /etc/default/knockd
+    if service_present knockd.service; then
+      run systemctl disable --now knockd.service
+    fi
+    # remove, not purge: retain configuration; do not autoremove dependencies.
+    run apt-get remove -y knockd
+  fi
   run apt-get install -y --no-install-recommends \
     ufw fwknop-server fwknop-client curl ca-certificates iproute2 python3
   detect_fwknop_unit
@@ -1059,6 +1136,7 @@ cmd_install() {
   validate_spa_ports "${SPA_PORTS}"
   [[ "${FW_ACCESS_TIMEOUT}" =~ ^[0-9]+$ ]] || die "--timeout 必须是秒数"
   have_cmd ip || die "需要 iproute2"
+  preflight_existing_tools
 
   cat <<EOF
 即将配置:

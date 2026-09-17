@@ -70,6 +70,17 @@ ghost-origin update-cf
 
 下文安装后的管理命令均在 root shell 中执行；普通用户可在整条命令前加 `sudo`。
 
+### 安装前检查已有敲门软件
+
+安装前检查 APT 软件包、PATH 中的程序和 systemd 服务：
+
+- **已有 knockd**：单独询问是否移除。确认后备份 `/etc/knockd.conf` 和 `/etc/default/knockd`，停止并禁用服务（若存在），通过 `apt-get remove` 移除软件包；不 purge、不 autoremove。原有敲门方式会失效，既有防火墙规则仍需检查。
+- **已有 fwknop**：单独询问是否升级。确认后备份 `access.conf`、`fwknopd.conf`，通过 `apt-get install --only-upgrade` 将已安装的 `fwknop-server` / `fwknop-client` 升级至配置软件源的候选版本。已是最新则保持版本；随后继续应用本项目配置并重启服务。
+- 所有确认通过后才开始系统修改。任一拒绝即取消安装。`--yes` **不会跳过**这两项确认；无控制终端时退出，需在交互终端运行。`--dry-run` 只展示计划。
+- 检测到非 APT 管理的软件时要求手动处理，不自动删除未知文件。`--skip-apt` 与已有软件的移除/升级流程不兼容，会退出提示。
+
+备份保存在 `/root/ghost-origin-backup/`。升级或卸载命令失败时停止，不继续配置防火墙；已完成的包管理操作不会自动回滚。远程操作前请保留控制台或其他恢复通道。
+
 ### 安装常用选项
 
 | 选项 | 含义 | 默认值 |
@@ -232,7 +243,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-当前版本常量为 `SCRIPT_VERSION="1.1.0"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
+当前版本常量为 `SCRIPT_VERSION="1.1.1"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
 
 `update` 从本仓库 `main` 分支下载脚本，检查非空、Bash 语法及入口标记后原子替换 `/usr/bin/ghost-origin`。失败时保留旧命令。该操作不执行 `install`，不更新辅助脚本、依赖、配置、密钥或防火墙规则；`update-cf` 仅同步 Cloudflare 网段，与脚本升级不同。这里依赖 HTTPS 和仓库可信性，语法检查不等于签名验证；始终获取 main，不进行版本大小比较。
 
