@@ -7,12 +7,12 @@
 #   - deny everything else
 #   - fwknop SPA temporarily opens requested ports (default tcp/22) via UFW
 #
-# SPA UDP/62201 is intentionally NOT allowed in UFW. fwknopd sniffs with
-# libpcap before the INPUT drop, so the knock port stays dark.
+# Default UDP mode supports distribution builds without libpcap and requires
+# an IPv4 UDP SPA transport rule. Optional pcap mode keeps that port dropped.
 set -euo pipefail
 
 readonly SCRIPT_NAME="ghost-origin"
-readonly SCRIPT_VERSION="1.1.2"
+readonly SCRIPT_VERSION="1.2.0"
 readonly SCRIPT_UPDATED_AT="2026-09-17"
 readonly PREFIX="/usr/local"
 readonly CONF_DIR="/etc/ghost-origin"
@@ -34,6 +34,7 @@ SPA_PORTS="${SPA_PORTS:-tcp/22}"
 SSH_PORT="${SSH_PORT:-22}"
 FW_ACCESS_TIMEOUT="${FW_ACCESS_TIMEOUT:-60}"
 SPA_UDP_PORT="${SPA_UDP_PORT:-62201}"
+SPA_MODE="${SPA_MODE:-udp}"
 ALLOW_SSH_FROM="${ALLOW_SSH_FROM:-}"
 WHITELIST_IPS="${WHITELIST_IPS:-}"
 BOOTSTRAP_SSH="${BOOTSTRAP_SSH:-auto}"
@@ -115,6 +116,7 @@ ${SCRIPT_NAME} ${SCRIPT_VERSION} (updated: ${SCRIPT_UPDATED_AT})
 安装选项:
   --cf-ports 80,443          Cloudflare 放行的 TCP 端口（默认 80,443）
   --spa-ports tcp/22         fwknop 允许请求打开的端口（默认 tcp/22）
+  --spa-mode udp|pcap        接收模式（默认 udp：放行 IPv4 UDP SPA 端口）
   --ssh-port 22              用于防锁死的 SSH 端口
   --timeout 60               SPA 打开时长（秒）
   --allow-ssh-from IP        永久放行该 IP 的 SSH（不推荐，仅应急）
@@ -163,6 +165,7 @@ parse_args() {
       --whitelist-ips) WHITELIST_IPS="${2:?}"; shift 2 ;;
       --cf-ports) CF_PORTS="${2:?}"; shift 2 ;;
       --spa-ports) SPA_PORTS="${2:?}"; shift 2 ;;
+      --spa-mode) SPA_MODE="${2:?}"; shift 2 ;;
       --ssh-port) SSH_PORT="${2:?}"; shift 2 ;;
       --timeout) FW_ACCESS_TIMEOUT="${2:?}"; shift 2 ;;
       --allow-ssh-from) ALLOW_SSH_FROM="${2:?}"; shift 2 ;;
@@ -380,11 +383,8 @@ SPA_PORTS=${SPA_PORTS}
 SSH_PORT=${SSH_PORT}
 FW_ACCESS_TIMEOUT=${FW_ACCESS_TIMEOUT}
 SPA_UDP_PORT=${SPA_UDP_PORT}
+SPA_MODE=${SPA_MODE}
 ENABLE_IPV6=${ENABLE_IPV6}
-UFW_COMMENT=${UFW_COMMENT}
-CF_IPV4_URL=${CF_IPV4_URL}
-CF_IPV6_URL=${CF_IPV6_URL}
-CF_API_URL=${CF_API_URL}
 EOF
   chmod 600 "${CONF_FILE}"
 }
@@ -428,6 +428,11 @@ if [[ -z "${SRC}" || -z "${PORTS}" ]]; then
 fi
 
 PROTO="${PROTO,,}"
+case "${PROTO}" in
+  6|tcp) PROTO="tcp" ;;
+  17|udp) PROTO="udp" ;;
+  *) echo "不支持的协议: ${PROTO}" >&2; exit 1 ;;
+esac
 PORTS="${PORTS// /}"
 PORTS="${PORTS#tcp/}"
 PORTS="${PORTS#udp/}"
@@ -463,6 +468,11 @@ if [[ -z "${SRC}" || -z "${PORTS}" ]]; then
 fi
 
 PROTO="${PROTO,,}"
+case "${PROTO}" in
+  6|tcp) PROTO="tcp" ;;
+  17|udp) PROTO="udp" ;;
+  *) exit 0 ;;
+esac
 PORTS="${PORTS// /}"
 
 IFS=',' read -ra plist <<< "${PORTS}"
@@ -730,6 +740,7 @@ SOURCE                      ANY
 OPEN_PORTS                  ${SPA_PORTS}
 REQUIRE_SOURCE_ADDRESS      Y
 FW_ACCESS_TIMEOUT           ${FW_ACCESS_TIMEOUT}
+CMD_CYCLE_TIMER             ${FW_ACCESS_TIMEOUT}
 KEY_BASE64                  ${KEY_BASE64}
 HMAC_KEY_BASE64             ${HMAC_KEY_BASE64}
 CMD_CYCLE_OPEN              ${PREFIX}/sbin/fwknop-ufw-open \$SRC \$PROTO \$PORT
@@ -742,11 +753,9 @@ set_fwknopd_var() {
   local key="$1" val="$2"
   local file="${FWKNOPD_CONF}"
   [[ -f "${file}" ]] || die "找不到 ${file}，fwknop-server 是否已安装？"
-  if grep -qE "^[#;[:space:]]*${key}[[:space:]]" "${file}"; then
-    sed -i -E "s|^[#;[:space:]]*${key}[[:space:]].*|${key}    ${val};|" "${file}"
-  else
-    printf '%s    %s;\n' "${key}" "${val}" >> "${file}"
-  fi
+  # Remove active duplicates, not commented examples, then append exactly once.
+  sed -i -E "/^[[:space:]]*${key}[[:space:]]/d" "${file}"
+  printf '%s    %s;\n' "${key}" "${val}" >> "${file}"
 }
 
 configure_fwknopd() {
@@ -754,7 +763,7 @@ configure_fwknopd() {
   local iface
   iface="$(default_iface)"
   [[ -n "${iface}" ]] || die "无法检测默认路由网卡，请手动设置 ${FWKNOPD_CONF} 中的 PCAP_INTF"
-  log "fwknopd 监听网卡: ${iface}（UDP/${SPA_UDP_PORT}，UFW 不放行该端口）"
+  log "fwknopd 接收模式: ${SPA_MODE}；网卡: ${iface}；SPA UDP/${SPA_UDP_PORT}"
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     return 0
@@ -763,10 +772,47 @@ configure_fwknopd() {
   set_fwknopd_var "PCAP_INTF" "${iface}"
   set_fwknopd_var "ENABLE_PCAP_PROMISC" "N"
   set_fwknopd_var "PCAP_FILTER" "udp port ${SPA_UDP_PORT}"
-  # CMD_CYCLE 负责改 UFW；关掉原生 iptables 注入，避免和 UFW/nft 抢链。
-  set_fwknopd_var "ENABLE_IPT_INPUT" "N"
+  # ENABLE_IPT_INPUT does not exist in fwknop 2.6.10. Command-cycle stanzas
+  # bypass native firewall operations; no invented disable-input setting needed.
+  sed -i -E '/^[[:space:]]*(ENABLE_IPT_INPUT|ENABLE_NFQ_CAPTURE)[[:space:]]/d' "${FWKNOPD_CONF}"
   set_fwknopd_var "ENABLE_IPT_OUTPUT" "N"
   set_fwknopd_var "ENABLE_IPT_FORWARDING" "N"
+  set_fwknopd_var "UDPSERV_PORT" "${SPA_UDP_PORT}"
+  if [[ "${SPA_MODE}" == "udp" ]]; then
+    set_fwknopd_var "ENABLE_UDP_SERVER" "Y"
+  else
+    # Leave unset so a no-pcap build reports its forced UDP fallback at parse time.
+    sed -i -E '/^[[:space:]]*ENABLE_UDP_SERVER[[:space:]]/d' "${FWKNOPD_CONF}"
+  fi
+}
+
+validate_fwknop_config() (
+  [[ "${DRY_RUN}" -eq 0 ]] || { log "DRY-RUN: fwknopd --exit-parse-config"; return 0; }
+  local report
+  umask 077
+  report="$(mktemp)"
+  trap 'rm -f -- "${report}"' EXIT
+  if ! LC_ALL=C fwknopd -c "${FWKNOPD_CONF}" -a "${ACCESS_CONF}" --exit-parse-config >"${report}" 2>&1; then
+    cat "${report}" >&2
+    die "fwknop 配置解析失败，未重置 UFW。"
+  fi
+  if grep -qi 'unknown configuration parameter' "${report}"; then
+    cat "${report}" >&2
+    die "fwknop 配置含未知参数，未重置 UFW。"
+  fi
+  if [[ "${SPA_MODE}" == "pcap" ]] && grep -qi 'forcing UDP server mode' "${report}"; then
+    die "此 fwknopd 未编译 libpcap，不能使用 pcap 模式。请选 --spa-mode udp 或安装支持 libpcap 的版本；未重置 UFW。"
+  fi
+  log "fwknop 配置解析通过。"
+)
+
+start_fwknop_service() {
+  [[ "${DRY_RUN}" -eq 0 ]] || { log "DRY-RUN: 在重置 UFW 前验证 fwknop 服务启动"; return 0; }
+  systemctl reset-failed "${FWKNOP_UNIT}" || true
+  if ! systemctl restart "${FWKNOP_UNIT}" || ! systemctl is-active --quiet "${FWKNOP_UNIT}"; then
+    die "${FWKNOP_UNIT} 启动失败，未重置 UFW。请查看 journalctl -u ${FWKNOP_UNIT} -n 50 --no-pager"
+  fi
+  systemctl enable "${FWKNOP_UNIT}"
 }
 
 write_client_rc() {
@@ -787,6 +833,7 @@ ACCESS              ${SPA_PORTS%%,*}
 KEY_BASE64          ${KEY_BASE64}
 HMAC_KEY_BASE64     ${HMAC_KEY_BASE64}
 USE_HMAC            Y
+SPA_SERVER_PORT     ${SPA_UDP_PORT}
 RESOLVE_IP_HTTPS    Y
 EOF
   chmod 600 "${KEY_FILE}"
@@ -814,7 +861,19 @@ configure_ufw_policy() {
   ufw logging low
 
   # 回环由 /etc/ufw/before.rules 默认放行。
-  # 不放行 UDP 62201，保持 SPA 端口对外不可见。
+  if [[ "${SPA_MODE}" == "udp" ]]; then
+    warn "UDP 模式：放行 IPv4 UDP/${SPA_UDP_PORT} 作为 SPA 传输入口，SSH 仍需认证授权。"
+    ufw allow proto udp from 0.0.0.0/0 to any port "${SPA_UDP_PORT}" comment ghost-origin-spa
+  fi
+}
+
+preflight_ssh_access() {
+  [[ "${BOOTSTRAP_SSH}" == "auto" || "${BOOTSTRAP_SSH}" == "yes" || "${BOOTSTRAP_SSH}" == "no" ]] || die "BOOTSTRAP_SSH 必须是 auto/yes/no"
+  if [[ -n "${ALLOW_SSH_FROM}" || "${BOOTSTRAP_SSH}" == "no" || -n "$(current_ssh_ip)" ]]; then
+    return 0
+  fi
+  [[ "${DRY_RUN}" -eq 0 ]] || { warn "实际安装需 --allow-ssh-from IP 或 --no-bootstrap-ssh"; return 0; }
+  die "未检测到 SSH_CONNECTION/SSH_CLIENT，拒绝继续安装。请用 --allow-ssh-from 你的公网IP --ssh-port SSH端口；控制台安装可显式指定 --no-bootstrap-ssh。sudo 可能清除了 SSH 环境变量。"
 }
 
 apply_bootstrap_ssh() {
@@ -1032,10 +1091,6 @@ enable_services() {
     return 0
   fi
 
-  systemctl enable "${FWKNOP_UNIT}"
-  systemctl restart "${FWKNOP_UNIT}"
-  systemctl is-active --quiet "${FWKNOP_UNIT}" || die "${FWKNOP_UNIT} 启动失败，见: journalctl -u ${FWKNOP_UNIT} -e"
-
   "${PREFIX}/sbin/cf-ufw-update"
 
   if [[ "${ENABLE_UFW}" -eq 1 ]]; then
@@ -1050,7 +1105,7 @@ print_summary() {
 
 ======== 安装完成 ========
 UFW: 默认拒绝入站；Cloudflare -> TCP ${CF_PORTS}；其余端口需 fwknop 敲门
-fwknopd: 监听 $(default_iface) UDP/${SPA_UDP_PORT}（UFW 不放行，端口保持关闭）
+fwknopd: ${SPA_MODE} 模式，SPA UDP/${SPA_UDP_PORT}（udp 模式显式放行 IPv4 SPA；pcap 模式不放行）
 SPA 可请求打开: ${SPA_PORTS} ，时长 ${FW_ACCESS_TIMEOUT}s
 客户端配置已写入: ${KEY_FILE}
 
@@ -1072,7 +1127,7 @@ SPA 可请求打开: ${SPA_PORTS} ，时长 ${FW_ACCESS_TIMEOUT}s
 
 安全提示:
   - 用 'ufw status numbered' 找到 comment=${BOOTSTRAP_COMMENT} 的 SSH 应急规则，敲门验证后删掉
-  - 不要 ufw allow ${SPA_UDP_PORT}/udp
+  - udp 模式需要 IPv4 UDP/${SPA_UDP_PORT} 可达（包括云防火墙）；pcap 模式不需要放行 SPA 端口
   - 密钥文件权限应为 600，不要提交到 git
 EOF
 }
@@ -1118,6 +1173,7 @@ cmd_uninstall() {
     ufw_delete_by_comment "${BOOTSTRAP_COMMENT}"
     ufw_delete_by_comment "${FWKNOP_COMMENT}"
     ufw_delete_by_comment "${WHITELIST_COMMENT}"
+    ufw_delete_by_comment ghost-origin-spa
   fi
   run rm -f /etc/systemd/system/cf-ufw-update.service \
             /etc/systemd/system/cf-ufw-update.timer \
@@ -1171,8 +1227,11 @@ cmd_install() {
   need_root
   validate_ports_csv "${CF_PORTS}"
   validate_spa_ports "${SPA_PORTS}"
-  [[ "${FW_ACCESS_TIMEOUT}" =~ ^[0-9]+$ ]] || die "--timeout 必须是秒数"
+  [[ "${FW_ACCESS_TIMEOUT}" =~ ^[1-9][0-9]{0,3}$ ]] && (( FW_ACCESS_TIMEOUT <= 3600 )) || die "--timeout 必须是 1-3600 秒"
+  [[ "${SPA_UDP_PORT}" =~ ^[1-9][0-9]{0,4}$ ]] && (( SPA_UDP_PORT <= 65535 )) || die "SPA_UDP_PORT 必须是 1-65535"
+  [[ "${SPA_MODE}" == "udp" || "${SPA_MODE}" == "pcap" ]] || die "--spa-mode 必须是 udp 或 pcap"
   have_cmd ip || die "需要 iproute2"
+  preflight_ssh_access
   preflight_existing_tools
 
   cat <<EOF
@@ -1180,6 +1239,7 @@ cmd_install() {
   Cloudflare TCP ${CF_PORTS} 放行（自动拉取官方 CIDR，每日刷新）
   UFW 默认拒绝其他入站
   fwknop SPA 可打开: ${SPA_PORTS}（${FW_ACCESS_TIMEOUT}s）
+  SPA 接收模式: ${SPA_MODE}（udp 模式放行 IPv4 UDP/${SPA_UDP_PORT}；pcap 模式不放行）
   网卡: $(default_iface || echo 未知)
   UFW reset: $([[ ${RESET_UFW} -eq 1 ]] && echo 是，将清空现有规则 || echo 否，保留现有规则)
 EOF
@@ -1198,7 +1258,9 @@ EOF
   generate_keys
   write_fwknop_access
   configure_fwknopd
+  validate_fwknop_config
   write_client_rc
+  start_fwknop_service
   configure_ufw_policy
   apply_bootstrap_ssh
   apply_initial_whitelist

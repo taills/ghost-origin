@@ -14,10 +14,11 @@
 - **UFW 默认拒绝所有入站**
 - **只允许 Cloudflare 访问 TCP 80/443**（官方 CIDR，本地 systemd 定时器每日自动同步）
 - **其余端口对外彻底隐身**，除非凭 **fwknop SPA（单包授权）** 敲门按需开门（默认打开 60 秒后自动关门）
+- **支持 UDP 与 PCAP 敲门模式**：默认 `udp` 模式放行 IPv4 UDP 敲门传输端口，兼容无 libpcap 的发行版软件包；若环境支持并选用 `--spa-mode pcap`，敲门端口可保持静默丢弃
 - **内置安全白名单系统**（一键添加/删除固定 IP，带倒序防误删保护）
 
 > **为什么是“幽灵源站”？**  
-> fwknop 默认的 SPA 敲门端口（UDP 62201）**无需**在 UFW 防火墙中放行。`fwknopd` 利用 libpcap 在 Linux 底层网卡直接嗅探校验。对于全网任何扫描器（Nmap / Shodan / Censys），你的服务器所有端口全部处于 Closed/Filtered 闭门状态。
+> 传统端口扫描器（Nmap / Shodan / Censys）会发现服务器的大部分管理端口处于关闭或过滤状态。在默认的 `udp` 模式下，仅暴露一个只接收合法 SPA 报文的 UDP 端口（默认 62201）；而在自行编译或支持 libpcap 的 `pcap` 模式下，该端口也可在防火墙层面直接丢弃，仅由底层抓包解密。
 
 ---
 
@@ -87,6 +88,7 @@ ghost-origin update-cf
 | --- | --- | --- |
 | `--cf-ports 80,443` | Cloudflare 永久放行的 TCP 端口 | `80,443` |
 | `--spa-ports tcp/22` | 敲门后允许临时打开的端口（可传 `tcp/22,tcp/2222`） | `tcp/22` |
+| `--spa-mode udp\|pcap` | SPA 接收模式（`udp` 默认放行 IPv4 敲门端口；`pcap` 需编译支持） | `udp` |
 | `--timeout 60` | SPA 敲门规则临时存活时长（秒） | `60` |
 | `--ssh-port 22` | SSH 应急规则使用的端口 | `22` |
 | `--whitelist-ips "IP1,IP2"` | 初始预设的免敲门白名单 IP 列表 | 无 |
@@ -222,7 +224,7 @@ ghost-origin del-ip 1.1.2.1,2.2.2.2
 | **Cloudflare IPv4/IPv6 → 80/443 (TCP)** | **ALLOW** | 官方公布 CIDR 放行，systemd 每日自动更新 |
 | **已建立连接 / 回环接口 (lo)** | **ALLOW** | UFW 默认机制，现有连接不中断 |
 | **白名单 IP 流量** | **ALLOW** | 手动添加的免敲门 IP/网段与端口 |
-| **fwknop SPA 敲门流量 (UDP 62201)** | **DROP (UFW)** | 防火墙拒绝但 `fwknopd` 在底层嗅探捕获，对外完全不可见 |
+| **fwknop SPA 敲门传输 (UDP 62201)** | **ALLOW (udp 模式) / DROP (pcap 模式)** | `udp` 模式放行 IPv4 传输端口；`pcap` 模式防火墙拒绝并由底层捕获 |
 | **未敲门的 SSH (TCP 22) 或其他所有入站** | **DROP / REJECT** | 外部扫描探测显示端口关闭/被过滤 |
 
 Cloudflare 官方 IP 数据源：
@@ -243,7 +245,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-当前版本常量为 `SCRIPT_VERSION="1.1.2"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
+当前版本常量为 `SCRIPT_VERSION="1.2.0"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
 
 `update` 从本仓库 `main` 分支下载脚本，检查非空、Bash 语法及入口标记后原子替换 `/usr/bin/ghost-origin`。失败时保留旧命令。该操作不执行 `install`，不更新辅助脚本、依赖、配置、密钥或防火墙规则；`update-cf` 仅同步 Cloudflare 网段，与脚本升级不同。这里依赖 HTTPS 和仓库可信性，语法检查不等于签名验证；始终获取 main，不进行版本大小比较。
 
@@ -294,7 +296,7 @@ ghost-origin uninstall
 ## 🔒 安全最佳实践
 
 1. **密钥隔离**：`/root/fwknop-client.rc` 包含对称加密密钥与 HMAC 认证密钥，权限应严格保持为 `600`，切勿提交至公开代码仓库。
-2. **切勿放行敲门端口**：绝对不要在 UFW 中执行 `ufw allow 62201/udp`。SPA 的隐蔽性核心就在于“敲门端口在防火墙层面是关闭的”。
+2. **敲门端口放行**：默认 `udp` 模式需要 IPv4 UDP 62201 可达（包括云厂商安全组）；若切换到 `--spa-mode pcap`，不要手动放行该端口。
 3. **域名代理开启**：部署在服务器上的站点在 Cloudflare DNS 面板中必须开启小黄云（Proxy 代理），避免源站真实 IP 被 DNS 查询泄露。
 4. **底层兼容**：通过 fwknop 的 `CMD_CYCLE` 命令调用 UFW 进行动态开门/关门，完全兼容现代 Linux 系统默认的 nftables/iptables 后端。
 

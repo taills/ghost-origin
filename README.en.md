@@ -14,10 +14,11 @@ GhostOrigin turns your origin server completely dark to the public internet:
 - **UFW default-deny policy**: Drops all unsolicited incoming traffic by default.
 - **Cloudflare-only Web access**: TCP ports 80 and 443 only accept connections from official Cloudflare IPv4 and IPv6 CIDRs (auto-synced daily via a systemd timer).
 - **Stealth management ports**: SSH and other administrative ports are completely silent. Access is granted dynamically and temporarily via **fwknop Single Packet Authorization (SPA)** port knocking (default: open for 60 seconds, existing connections stay alive).
+- **Dual SPA reception modes**: Default `udp` mode permits the IPv4 UDP transport port to support distribution packages built without libpcap; optional `--spa-mode pcap` keeps the port dropped if supported by the binary.
 - **Built-in IP Whitelist Manager**: Easily allow permanent or port-specific access for fixed office IPs, jump hosts, or monitoring agents with safe reverse-order deletion.
 
 > **Why is it called "GhostOrigin"?**  
-> fwknop's default SPA knocking port (`UDP 62201`) is **never opened** in UFW. Instead, the `fwknopd` daemon sniffs raw network frames with `libpcap` before the firewall's `INPUT` drop chain. To any port scanner on the internet (Nmap, Shodan, Censys), every single port on your server is reported as `closed` or `filtered`.
+> To external scanners (Nmap, Shodan, Censys), nearly all origin services appear closed or filtered. In default `udp` mode, only an unauthenticated-drop UDP port (default 62201) receives encrypted authorization packets; in `--spa-mode pcap`, the knock port can remain completely dropped at the firewall layer and sniffed via libpcap.
 
 ---
 
@@ -87,6 +88,7 @@ Backups are stored in `/root/ghost-origin-backup/`. A failed upgrade or removal 
 | --- | --- | --- |
 | `--cf-ports 80,443` | TCP ports allowed for Cloudflare CIDRs | `80,443` |
 | `--spa-ports tcp/22` | Ports that can be requested via fwknop SPA (e.g. `tcp/22,tcp/2222`) | `tcp/22` |
+| `--spa-mode udp\|pcap` | SPA reception mode (`udp` opens IPv4 UDP knock port; `pcap` requires compiled support) | `udp` |
 | `--timeout 60` | Duration (in seconds) the firewall opens after an SPA knock | `60` |
 | `--ssh-port 22` | SSH port used for the anti-lockout bootstrap rule | `22` |
 | `--whitelist-ips "IP1,IP2"` | Initial list of whitelisted IPs to allow bypass without knocking | None |
@@ -222,7 +224,7 @@ ghost-origin del-ip 1.1.2.1,2.2.2.2
 | **Cloudflare IPv4/IPv6 → 80/443 (TCP)** | **ALLOW** | Official published CIDRs, auto-updated daily |
 | **Established / Related / Loopback (lo)** | **ALLOW** | Standard UFW stateful tracking |
 | **Whitelisted IP Traffic** | **ALLOW** | Explicitly permitted via `allow-ip` |
-| **fwknop SPA Knock Packets (UDP 62201)** | **DROP (UFW)** | Dropped by UFW but sniffed at raw PCAP layer; port stays dark |
+| **fwknop SPA Knock Packets (UDP 62201)** | **ALLOW (udp mode) / DROP (pcap mode)** | `udp` mode opens IPv4 port; `pcap` mode drops in UFW and captures raw packets |
 | **Un-knocked SSH (TCP 22) or Any Other Port** | **DROP / REJECT** | External port scans see ports as closed/filtered |
 
 Cloudflare IP Data Sources:
@@ -243,7 +245,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-Current constants: `SCRIPT_VERSION="1.1.2"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
+Current constants: `SCRIPT_VERSION="1.2.0"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
 
 `update` downloads from this repository's `main` branch, checks for nonempty content, valid Bash syntax and the entry-point marker, then atomically replaces `/usr/bin/ghost-origin`. Failures preserve the existing command. It does not run `install` or upgrade helper scripts, dependencies, configuration, keys or firewall rules. `update-cf` only refreshes Cloudflare CIDRs. This trusts HTTPS and the repository; syntax checks are not signature verification. The command always fetches main and does not compare version ordering.
 
@@ -294,7 +296,7 @@ Original configuration backups are stored under `/root/ghost-origin-backup/`.
 ## 🔒 Security Best Practices
 
 1. **Protect Your Keys**: `/root/fwknop-client.rc` contains symmetric encryption keys and HMAC authentication keys. Ensure file permissions remain `600` and never commit keys to public repositories.
-2. **Never Open the Knock Port in UFW**: Do not run `ufw allow 62201/udp`. The entire stealth property of Single Packet Authorization relies on the knock port appearing completely closed to the outside world.
+2. **Knock Port Access**: Default `udp` mode requires IPv4 UDP 62201 to be reachable (including any cloud firewall / security groups). When using `--spa-mode pcap`, do not allow that port in UFW.
 3. **Keep Cloudflare Proxy Enabled**: Ensure DNS records for your website have the orange cloud (Proxy) enabled in the Cloudflare dashboard so the origin IP is not leaked via DNS resolution.
 4. **Backend Neutral**: fwknop's `CMD_CYCLE` hooks interact with UFW at the CLI level rather than injecting custom iptables chains, ensuring full compatibility with both `nftables` and legacy `iptables` backends on modern Linux distributions.
 
