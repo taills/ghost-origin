@@ -51,8 +51,14 @@ need_root() { :; }
 EOF
 chmod +x "${TMP}/runner.sh"
 
-echo "=== 1. Dry run install ==="
+echo "=== 1. Dry run install (no bootstrap ssh) ==="
 "${TMP}/runner.sh" install --dry-run -y --cf-ports 80,443 --spa-ports tcp/22 --no-bootstrap-ssh
+
+echo "=== 1b. Dry run install (auto detect ssh without explicit allow-ssh-from / ssh-port) ==="
+SSH_CONNECTION="203.0.113.88 54321 192.0.2.1 22" "${TMP}/runner.sh" install --dry-run -y --cf-ports 80,443 --spa-ports tcp/22
+
+echo "=== 1c. Dry run install (explicit allow-ssh-from and custom ssh-port) ==="
+"${TMP}/runner.sh" install --dry-run -y --cf-ports 80,443 --spa-ports tcp/22 --allow-ssh-from 198.51.100.77 --ssh-port 2222
 
 echo "=== 2. Dry run with custom ports and whitelist-ips ==="
 "${TMP}/runner.sh" install --dry-run -y --cf-ports 8080 --spa-ports tcp/2222,tcp/3333 --whitelist-ips "10.0.0.1,10.0.0.2" --no-bootstrap-ssh

@@ -90,11 +90,11 @@ ghost-origin update-cf
 | `--spa-ports tcp/22` | 敲门后允许临时打开的端口（可传 `tcp/22,tcp/2222`） | `tcp/22` |
 | `--spa-mode udp\|pcap` | SPA 接收模式（`udp` 默认放行 IPv4 敲门端口；`pcap` 需编译支持） | `udp` |
 | `--timeout 60` | SPA 敲门规则临时存活时长（秒） | `60` |
-| `--ssh-port 22` | SSH 应急规则使用的端口 | `22` |
+| `--ssh-port 22` | SSH 应急规则使用的端口（未指定时自动探测服务监听端口，默认 `22`） | 自动探测 / `22` |
 | `--whitelist-ips "IP1,IP2"` | 初始预设的免敲门白名单 IP 列表 | 无 |
-| `--bootstrap-ssh` | 放行当前 SSH 来源 IP（检测到 `SSH_CONNECTION` 时默认开启防锁死） | `auto` |
+| `--bootstrap-ssh` | 放行当前 SSH 来源 IP（检测到连接时默认开启防锁死） | `auto` |
 | `--no-bootstrap-ssh` | 不添加应急 SSH 规则（必须确保立即能敲门） | - |
-| `--allow-ssh-from IP` | 指定 IP 的 SSH 永久应急放行 | - |
+| `--allow-ssh-from IP` | 指定 IP 的 SSH 应急直连放行（未指定时自动探测并询问用户） | 自动探测询问 |
 | `--keep-ufw-rules` | 不执行 `ufw reset`，保留现有自定义规则 | 否（默认清空） |
 | `--no-ufw-enable` | 只写规则，不执行 `ufw --force enable` | - |
 | `--no-ipv6` | 不处理 IPv6 / 不放行 Cloudflare IPv6 | - |
@@ -256,7 +256,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-当前版本常量为 `SCRIPT_VERSION="1.2.1"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
+当前版本常量为 `SCRIPT_VERSION="1.3.0"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
 
 `update` 从本仓库 `main` 分支下载脚本，检查非空、Bash 语法及入口标记后原子替换 `/usr/bin/ghost-origin`。失败时保留旧命令。该操作不执行 `install`，不更新辅助脚本、依赖、配置、密钥或防火墙规则；`update-cf` 仅同步 Cloudflare 网段，与脚本升级不同。这里依赖 HTTPS 和仓库可信性，语法检查不等于签名验证；始终获取 main，不进行版本大小比较。
 

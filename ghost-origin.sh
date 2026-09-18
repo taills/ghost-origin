@@ -12,7 +12,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="ghost-origin"
-readonly SCRIPT_VERSION="1.2.1"
+readonly SCRIPT_VERSION="1.3.0"
 readonly SCRIPT_UPDATED_AT="2026-09-17"
 readonly PREFIX="/usr/local"
 readonly CONF_DIR="/etc/ghost-origin"
@@ -31,13 +31,21 @@ readonly KEY_BACKUP_DIR="/root/ghost-origin-backup"
 
 CF_PORTS="${CF_PORTS:-80,443}"
 SPA_PORTS="${SPA_PORTS:-tcp/22}"
-SSH_PORT="${SSH_PORT:-22}"
+SSH_PORT="${SSH_PORT:-}"
 FW_ACCESS_TIMEOUT="${FW_ACCESS_TIMEOUT:-60}"
 SPA_UDP_PORT="${SPA_UDP_PORT:-62201}"
 SPA_MODE="${SPA_MODE:-udp}"
 ALLOW_SSH_FROM="${ALLOW_SSH_FROM:-}"
 WHITELIST_IPS="${WHITELIST_IPS:-}"
 BOOTSTRAP_SSH="${BOOTSTRAP_SSH:-auto}"
+CLI_SPECIFIED_ALLOW_SSH_FROM=0
+CLI_SPECIFIED_SSH_PORT=0
+if [[ -n "${ALLOW_SSH_FROM}" ]]; then
+  CLI_SPECIFIED_ALLOW_SSH_FROM=1
+fi
+if [[ -n "${SSH_PORT}" ]]; then
+  CLI_SPECIFIED_SSH_PORT=1
+fi
 ASSUME_YES=0
 DRY_RUN=0
 SKIP_APT=0
@@ -117,9 +125,9 @@ ${SCRIPT_NAME} ${SCRIPT_VERSION} (updated: ${SCRIPT_UPDATED_AT})
   --cf-ports 80,443          Cloudflare 放行的 TCP 端口（默认 80,443）
   --spa-ports tcp/22         fwknop 允许请求打开的端口（默认 tcp/22）
   --spa-mode udp|pcap        接收模式（默认 udp：放行 IPv4 UDP SPA 端口）
-  --ssh-port 22              用于防锁死的 SSH 端口
+  --ssh-port 22              用于防锁死的 SSH 端口（未指定时自动探测监听端口，默认 22）
   --timeout 60               SPA 打开时长（秒）
-  --allow-ssh-from IP        永久放行该 IP 的 SSH（不推荐，仅应急）
+  --allow-ssh-from IP        放行该 IP 直连 SSH（未指定时自动探测当前连接客户端并询问）
   --whitelist-ips "IP1,IP2"  安装时初始添加的白名单 IP 列表
   --bootstrap-ssh            从当前 SSH 来源 IP 临时放行 SSH（默认：检测到 SSH 则开启）
   --no-bootstrap-ssh         不添加 SSH 应急规则（可能把自己锁在门外）
@@ -166,9 +174,9 @@ parse_args() {
       --cf-ports) CF_PORTS="${2:?}"; shift 2 ;;
       --spa-ports) SPA_PORTS="${2:?}"; shift 2 ;;
       --spa-mode) SPA_MODE="${2:?}"; shift 2 ;;
-      --ssh-port) SSH_PORT="${2:?}"; shift 2 ;;
+      --ssh-port) SSH_PORT="${2:?}"; CLI_SPECIFIED_SSH_PORT=1; shift 2 ;;
       --timeout) FW_ACCESS_TIMEOUT="${2:?}"; shift 2 ;;
-      --allow-ssh-from) ALLOW_SSH_FROM="${2:?}"; shift 2 ;;
+      --allow-ssh-from) ALLOW_SSH_FROM="${2:?}"; CLI_SPECIFIED_ALLOW_SSH_FROM=1; shift 2 ;;
       --bootstrap-ssh) BOOTSTRAP_SSH="yes"; shift ;;
       --no-bootstrap-ssh) BOOTSTRAP_SSH="no"; shift ;;
       --no-ufw-enable) ENABLE_UFW=0; shift ;;
@@ -205,12 +213,50 @@ default_iface() {
     | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit }}'
 }
 
+detect_sshd_port() {
+  local port=""
+  if have_cmd ss; then
+    port="$(ss -tlnp 2>/dev/null | awk '
+      $1 ~ /^LISTEN/ {
+        addr = $4
+        sub(/.*:/, "", addr)
+        if (addr ~ /^[0-9]+$/ && ($0 ~ /sshd/ || addr == "22")) {
+          print addr
+          exit
+        }
+      }')"
+  fi
+  if [[ -z "${port}" ]] && have_cmd sshd; then
+    port="$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}')"
+  fi
+  if [[ -z "${port}" && -f /etc/ssh/sshd_config ]]; then
+    port="$(grep -Eh "^[[:space:]]*Port[[:space:]]+[0-9]+" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk '{print $2}' | tail -n 1)"
+  fi
+  printf '%s\n' "${port:-22}"
+}
+
 current_ssh_ip() {
+  local port="${1:-${SSH_PORT:-22}}"
   local ip=""
   if [[ -n "${SSH_CONNECTION:-}" ]]; then
     ip="${SSH_CONNECTION%% *}"
   elif [[ -n "${SSH_CLIENT:-}" ]]; then
     ip="${SSH_CLIENT%% *}"
+  fi
+  if [[ -z "${ip}" ]] && have_cmd who; then
+    ip="$(who -m 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i ~ /^\([0-9a-fA-F.:]+\)$/) {gsub(/[()]/,"",$i); print $i; exit}}')"
+  fi
+  if [[ -z "${ip}" ]] && have_cmd ss; then
+    ip="$(ss -tn state established "( sport = :${port} )" 2>/dev/null | awk '
+      $1 ~ /^ESTAB/ {
+        peer = $5
+        sub(/:[0-9]+$/, "", peer)
+        gsub(/^[\[]|[\]]$/, "", peer)
+        if (peer != "" && peer != "127.0.0.1" && peer != "::1") {
+          print peer
+          exit
+        }
+      }')"
   fi
   printf '%s\n' "${ip}"
 }
@@ -243,6 +289,22 @@ validate_spa_ports() {
     item="${item// /}"
     [[ "${item}" =~ ^(tcp|udp)/[0-9]+$ ]] || die "SPA 端口无效: ${item}（示例: tcp/22 或 tcp/22,tcp/2222）"
   done
+}
+
+confirm_yes_default() {
+  local prompt="$1"
+  if [[ "${ASSUME_YES}" -eq 1 || "${DRY_RUN}" -eq 1 ]]; then
+    return 0
+  fi
+  local ans=""
+  if [[ -t 0 ]]; then
+    read -r -p "${prompt} [Y/n] " ans
+  elif [[ -r /dev/tty ]]; then
+    read -r -p "${prompt} [Y/n] " ans < /dev/tty
+  else
+    return 0
+  fi
+  [[ -z "${ans}" || "${ans}" == "y" || "${ans}" == "Y" ]]
 }
 
 confirm() {
@@ -890,38 +952,83 @@ configure_ufw_policy() {
 
 preflight_ssh_access() {
   [[ "${BOOTSTRAP_SSH}" == "auto" || "${BOOTSTRAP_SSH}" == "yes" || "${BOOTSTRAP_SSH}" == "no" ]] || die "BOOTSTRAP_SSH 必须是 auto/yes/no"
-  if [[ -n "${ALLOW_SSH_FROM}" || "${BOOTSTRAP_SSH}" == "no" || -n "$(current_ssh_ip)" ]]; then
+
+  # 1. 自动探测或验证 SSH_PORT
+  if [[ "${CLI_SPECIFIED_SSH_PORT}" -eq 0 || -z "${SSH_PORT}" ]]; then
+    local detected_port
+    detected_port="$(detect_sshd_port)"
+    SSH_PORT="${detected_port:-22}"
+    log "自动探测到 SSH 服务监听端口: ${SSH_PORT}"
+  fi
+  [[ "${SSH_PORT}" =~ ^[1-9][0-9]{0,4}$ ]] && (( SSH_PORT <= 65535 )) || die "SSH_PORT 端口号无效: ${SSH_PORT}"
+
+  # 2. 如果用户显式传了 --no-bootstrap-ssh
+  if [[ "${BOOTSTRAP_SSH}" == "no" ]]; then
+    ALLOW_SSH_FROM=""
+    warn "已配置跳过 SSH 应急规则（--no-bootstrap-ssh）。新 SSH 连接需先通过 fwknop 敲门。"
     return 0
   fi
-  [[ "${DRY_RUN}" -eq 0 ]] || { warn "实际安装需 --allow-ssh-from IP 或 --no-bootstrap-ssh"; return 0; }
-  die "未检测到 SSH_CONNECTION/SSH_CLIENT，拒绝继续安装。请用 --allow-ssh-from 你的公网IP --ssh-port SSH端口；控制台安装可显式指定 --no-bootstrap-ssh。sudo 可能清除了 SSH 环境变量。"
+
+  # 3. 如果用户显式传了 --allow-ssh-from
+  if [[ "${CLI_SPECIFIED_ALLOW_SSH_FROM}" -eq 1 && -n "${ALLOW_SSH_FROM}" ]]; then
+    is_ipv4 "${ALLOW_SSH_FROM}" || is_ipv6 "${ALLOW_SSH_FROM}" || die "--allow-ssh-from 不是合法 IP: ${ALLOW_SSH_FROM}"
+    BOOTSTRAP_SSH="yes"
+    log "使用指定 SSH 应急放行 IP: ${ALLOW_SSH_FROM} -> TCP/${SSH_PORT}"
+    return 0
+  fi
+
+  # 4. 未指定时自动探测当前 SSH 客户端 IP
+  local detected_client_ip
+  detected_client_ip="$(current_ssh_ip "${SSH_PORT}")"
+
+  if [[ -n "${detected_client_ip}" ]]; then
+    log "自动探测到当前 SSH 客户端连接: IP [${detected_client_ip}]，端口 [${SSH_PORT}]"
+    if confirm_yes_default "是否添加防锁死应急规则（允许 ${detected_client_ip} -> TCP/${SSH_PORT}）？"; then
+      ALLOW_SSH_FROM="${detected_client_ip}"
+      BOOTSTRAP_SSH="yes"
+      log "已确认添加防锁死应急规则: 允许 ${ALLOW_SSH_FROM} -> TCP/${SSH_PORT}"
+    else
+      ALLOW_SSH_FROM=""
+      BOOTSTRAP_SSH="no"
+      warn "用户选择不添加 SSH 应急规则。安装完成后新 SSH 连接必须先通过 fwknop 敲门。"
+    fi
+  else
+    # 未探测到客户端 IP
+    if [[ -t 0 || -r /dev/tty ]] && [[ "${ASSUME_YES}" -eq 0 && "${DRY_RUN}" -eq 0 ]]; then
+      warn "未自动探测到当前 SSH 客户端 IP（SSH 监听端口: ${SSH_PORT}）。"
+      local ans="" manual_ip=""
+      printf "是否手动输入客户端公网 IP 以添加防锁死应急规则？ [y/N] " >/dev/tty && read -r ans < /dev/tty || ans="n"
+      if [[ "${ans}" == "y" || "${ans}" == "Y" ]]; then
+        printf "请输入您的客户端公网 IP: " >/dev/tty && read -r manual_ip < /dev/tty || manual_ip=""
+        manual_ip="${manual_ip// /}"
+        if is_ipv4 "${manual_ip}" || is_ipv6 "${manual_ip}"; then
+          ALLOW_SSH_FROM="${manual_ip}"
+          BOOTSTRAP_SSH="yes"
+          log "已配置 SSH 应急规则: 允许 ${ALLOW_SSH_FROM} -> TCP/${SSH_PORT}"
+        else
+          die "输入的 IP 格式无效: ${manual_ip}"
+        fi
+      else
+        ALLOW_SSH_FROM=""
+        BOOTSTRAP_SSH="no"
+        warn "未配置 SSH 应急规则。请确保安装完成后能通过 fwknop 敲门连接。"
+      fi
+    else
+      ALLOW_SSH_FROM=""
+      BOOTSTRAP_SSH="no"
+      warn "未探测到当前 SSH 客户端 IP，跳过防锁死应急规则。新 SSH 连接需先通过 fwknop 敲门。"
+    fi
+  fi
 }
 
 apply_bootstrap_ssh() {
-  local ip="${ALLOW_SSH_FROM}"
-  if [[ -n "${ip}" ]]; then
-    is_ipv4 "${ip}" || is_ipv6 "${ip}" || die "--allow-ssh-from 不是合法 IP: ${ip}"
-    log "应急放行 SSH: ${ip} -> tcp/${SSH_PORT}"
+  if [[ "${BOOTSTRAP_SSH}" == "yes" && -n "${ALLOW_SSH_FROM}" ]]; then
+    is_ipv4 "${ALLOW_SSH_FROM}" || is_ipv6 "${ALLOW_SSH_FROM}" || die "--allow-ssh-from 不是合法 IP: ${ALLOW_SSH_FROM}"
+    log "应急放行 SSH: ${ALLOW_SSH_FROM} -> tcp/${SSH_PORT}"
     [[ "${DRY_RUN}" -eq 1 ]] && return 0
-    ufw allow proto tcp from "${ip}" to any port "${SSH_PORT}" comment "${BOOTSTRAP_COMMENT}"
-    return 0
-  fi
-
-  local ssh_ip
-  ssh_ip="$(current_ssh_ip)"
-  if [[ "${BOOTSTRAP_SSH}" == "no" ]]; then
+    ufw allow proto tcp from "${ALLOW_SSH_FROM}" to any port "${SSH_PORT}" comment "${BOOTSTRAP_COMMENT}"
+  else
     warn "未添加 SSH 应急规则。启用 UFW 后，新 SSH 必须先 fwknop 敲门。"
-    return 0
-  fi
-  if [[ "${BOOTSTRAP_SSH}" == "auto" && -z "${ssh_ip}" ]]; then
-    warn "未检测到 SSH_CONNECTION，跳过应急 SSH 规则。"
-    return 0
-  fi
-  if [[ "${BOOTSTRAP_SSH}" == "yes" || "${BOOTSTRAP_SSH}" == "auto" ]]; then
-    [[ -n "${ssh_ip}" ]] || die "--bootstrap-ssh 需要能检测到当前 SSH 来源 IP，或改用 --allow-ssh-from"
-    log "临时放行当前 SSH 来源 ${ssh_ip} -> tcp/${SSH_PORT}（验证敲门成功后请删除）"
-    [[ "${DRY_RUN}" -eq 1 ]] && return 0
-    ufw allow proto tcp from "${ssh_ip}" to any port "${SSH_PORT}" comment "${BOOTSTRAP_COMMENT}"
   fi
 }
 
@@ -1268,6 +1375,7 @@ cmd_install() {
   UFW 默认拒绝其他入站
   fwknop SPA 可打开: ${SPA_PORTS}（${FW_ACCESS_TIMEOUT}s）
   SPA 接收模式: ${SPA_MODE}（udp 模式放行 IPv4 UDP/${SPA_UDP_PORT}；pcap 模式不放行）
+  SSH 应急规则: $([[ -n "${ALLOW_SSH_FROM}" ]] && echo "允许 ${ALLOW_SSH_FROM} -> TCP/${SSH_PORT}" || echo "无（需先敲门）")
   网卡: $(default_iface || echo 未知)
   UFW reset: $([[ ${RESET_UFW} -eq 1 ]] && echo 是，将清空现有规则 || echo 否，保留现有规则)
 EOF

@@ -90,11 +90,11 @@ Backups are stored in `/root/ghost-origin-backup/`. A failed upgrade or removal 
 | `--spa-ports tcp/22` | Ports that can be requested via fwknop SPA (e.g. `tcp/22,tcp/2222`) | `tcp/22` |
 | `--spa-mode udp\|pcap` | SPA reception mode (`udp` opens IPv4 UDP knock port; `pcap` requires compiled support) | `udp` |
 | `--timeout 60` | Duration (in seconds) the firewall opens after an SPA knock | `60` |
-| `--ssh-port 22` | SSH port used for the anti-lockout bootstrap rule | `22` |
+| `--ssh-port 22` | SSH port for anti-lockout rule (auto-detected from sshd if unspecified, default `22`) | Auto / `22` |
 | `--whitelist-ips "IP1,IP2"` | Initial list of whitelisted IPs to allow bypass without knocking | None |
 | `--bootstrap-ssh` | Automatically allow current SSH source IP to prevent lockout | `auto` |
 | `--no-bootstrap-ssh` | Do not add bootstrap SSH rule (ensure you can knock immediately) | - |
-| `--allow-ssh-from IP` | Manually specify an IP for emergency SSH access | - |
+| `--allow-ssh-from IP` | Specify client IP for SSH bypass (auto-detected and prompted if unspecified) | Auto / Prompt |
 | `--keep-ufw-rules` | Retain existing UFW rules instead of executing `ufw reset` | No (resets by default) |
 | `--no-ufw-enable` | Write rules without running `ufw --force enable` | - |
 | `--no-ipv6` | Disable IPv6 support and skip Cloudflare IPv6 CIDRs | - |
@@ -256,7 +256,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-Current constants: `SCRIPT_VERSION="1.2.1"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
+Current constants: `SCRIPT_VERSION="1.3.0"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
 
 `update` downloads from this repository's `main` branch, checks for nonempty content, valid Bash syntax and the entry-point marker, then atomically replaces `/usr/bin/ghost-origin`. Failures preserve the existing command. It does not run `install` or upgrade helper scripts, dependencies, configuration, keys or firewall rules. `update-cf` only refreshes Cloudflare CIDRs. This trusts HTTPS and the repository; syntax checks are not signature verification. The command always fetches main and does not compare version ordering.
 
