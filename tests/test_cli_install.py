@@ -44,9 +44,24 @@ with tempfile.TemporaryDirectory() as tmp:
         assert result.returncode != 0
         assert target.read_bytes() == payload.read_bytes()
         assert not list(folder.glob('.ghost-origin.*'))
+# No arguments must be identical to --help, with no privilege check or install.
+help_result = subprocess.run(['bash', str(ROOT / 'ghost-origin.sh'), '--help'], text=True, capture_output=True, check=True)
+for args in [[], ['help'], ['-h'], ['--yes']]:
+    result = subprocess.run(['bash', str(ROOT / 'ghost-origin.sh'), *args], text=True, capture_output=True)
+    assert result.returncode == 0 and result.stdout == help_result.stdout and result.stderr == ''
+# Sentinel functions test dispatch without executing any real installer actions.
+with tempfile.TemporaryDirectory() as tmp:
+    runner = Path(tmp) / 'dispatch.sh'
+    body = source.rsplit('\nmain "$@"', 1)[0]
+    runner.write_text(body + '\nneed_root() { exit 91; }\ncmd_install() { exit 92; }\nmain "$@"\n')
+    result = subprocess.run(['bash', str(runner)], text=True, capture_output=True)
+    assert result.returncode == 0 and '用法:' in result.stdout
+    runner.write_text(body + '\nneed_root() { :; }\ncmd_install() { echo INSTALL_DISPATCH; }\nmain "$@"\n')
+    result = subprocess.run(['bash', str(runner), 'install'], text=True, capture_output=True)
+    assert result.returncode == 0 and result.stdout == 'INSTALL_DISPATCH\n'
 for flag in ['--version', 'version', '-v']:
     output = subprocess.check_output(['bash', str(ROOT / 'ghost-origin.sh'), flag], text=True)
-    assert '1.3.0' in output and '2026-09-17' in output
+    assert '1.3.1' in output and '2026-09-17' in output
 subprocess.run(['bash', str(ROOT / 'ghost-origin.sh'), 'update', '--dry-run'], check=True)
 for filename in ['README.md', 'README.en.md']:
     text = (ROOT / filename).read_text()

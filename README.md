@@ -65,6 +65,8 @@ ghost-origin del-ip 192.0.2.10
 ghost-origin update-cf
 ```
 
+直接执行 `ghost-origin`（不带参数）或 `bash ghost-origin.sh` 会显示帮助并以状态码 0 退出，不安装、不修改系统，也无需 root。仅显式执行 `ghost-origin install` 才进入安装流程；单独传入 `--yes` 不会触发安装。
+
 普通用户直接运行管理命令仍会提示权限不足并退出；不会自动提权。`ghost-origin --help` 无需 root。
 
 本地安装复制正在运行的脚本；`curl | bash` 安装没有源文件，会重新下载上述仓库 `main` 分支脚本，经语法检查后原子替换目标文件。两次下载之间 `main` 可能变化，需固定版本时请下载并审阅同一版本后从本地运行。下载失败不会覆盖已有命令，但此前完成的安装步骤不会自动回滚。`--dry-run` 不写入命令文件；`ghost-origin uninstall` 同时移除该命令。
@@ -256,7 +258,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-当前版本常量为 `SCRIPT_VERSION="1.3.0"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
+当前版本常量为 `SCRIPT_VERSION="1.3.1"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
 
 `update` 从本仓库 `main` 分支下载脚本，检查非空、Bash 语法及入口标记后原子替换 `/usr/bin/ghost-origin`。失败时保留旧命令。该操作不执行 `install`，不更新辅助脚本、依赖、配置、密钥或防火墙规则；`update-cf` 仅同步 Cloudflare 网段，与脚本升级不同。这里依赖 HTTPS 和仓库可信性，语法检查不等于签名验证；始终获取 main，不进行版本大小比较。
 

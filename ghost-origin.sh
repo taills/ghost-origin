@@ -12,7 +12,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="ghost-origin"
-readonly SCRIPT_VERSION="1.3.0"
+readonly SCRIPT_VERSION="1.3.1"
 readonly SCRIPT_UPDATED_AT="2026-09-17"
 readonly PREFIX="/usr/local"
 readonly CONF_DIR="/etc/ghost-origin"
@@ -53,7 +53,7 @@ FORCE_KEYS=0
 ENABLE_UFW=1
 ENABLE_IPV6=1
 RESET_UFW=1
-CMD="install"
+CMD="help"
 FWKNOP_UNIT="fwknop-server"
 KEY_BASE64=""
 HMAC_KEY_BASE64=""
@@ -104,7 +104,8 @@ usage() {
 ${SCRIPT_NAME} ${SCRIPT_VERSION} (updated: ${SCRIPT_UPDATED_AT})
 
 用法:
-  $0 install [选项]                 安装并配置 ufw + fwknop（默认）
+  $0                               显示帮助（不安装，无需 root）
+  $0 install [选项]                 安装并配置 ufw + fwknop
   $0 allow-ip <IP[/CIDR]> [选项]     添加白名单 IP（放行访问，免敲门）
   $0 del-ip <IP[/CIDR]> [选项]       删除白名单 IP 规则
   $0 list-ip                        查看当前白名单 IP 列表
@@ -147,7 +148,8 @@ EOF
 }
 
 parse_args() {
-  CMD="install"
+  # Installation must always be explicitly requested, including as root.
+  CMD="help"
   if [[ "${#}" -gt 0 && "$1" != -* ]]; then
     CMD="$1"
     shift

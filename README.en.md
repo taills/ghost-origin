@@ -65,6 +65,8 @@ ghost-origin del-ip 192.0.2.10
 ghost-origin update-cf
 ```
 
+Running `ghost-origin` with no arguments (or `bash ghost-origin.sh`) displays help and exits with status 0, without installation, system changes, or root privileges. Installation requires the explicit `ghost-origin install` command; `--yes` alone does not trigger installation.
+
 Management commands still reject non-root users; there is no automatic privilege escalation. `ghost-origin --help` does not require root.
 
 Local installation copies the running script. A `curl | bash` installation has no source file, so it downloads the script again from this repository's `main` branch, checks its syntax, and replaces the destination atomically. Because `main` may change between downloads, download and review a pinned version locally when version consistency is required. A failed download leaves any existing command untouched, but does not roll back earlier installation steps. `--dry-run` does not write the command file; `ghost-origin uninstall` also removes it.
@@ -256,7 +258,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-Current constants: `SCRIPT_VERSION="1.3.0"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
+Current constants: `SCRIPT_VERSION="1.3.1"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
 
 `update` downloads from this repository's `main` branch, checks for nonempty content, valid Bash syntax and the entry-point marker, then atomically replaces `/usr/bin/ghost-origin`. Failures preserve the existing command. It does not run `install` or upgrade helper scripts, dependencies, configuration, keys or firewall rules. `update-cf` only refreshes Cloudflare CIDRs. This trusts HTTPS and the repository; syntax checks are not signature verification. The command always fetches main and does not compare version ordering.
 
