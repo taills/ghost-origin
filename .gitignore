@@ -3,3 +3,5 @@
 *.backup
 /config
 .DS_Store
+__pycache__/
+*.pyc
