@@ -100,6 +100,8 @@ Backups are stored in `/root/ghost-origin-backup/`. A failed upgrade or removal 
 | `--keep-ufw-rules` | Retain existing UFW rules instead of executing `ufw reset` | No (resets by default) |
 | `--no-ufw-enable` | Write rules without running `ufw --force enable` | - |
 | `--no-ipv6` | Disable IPv6 support and skip Cloudflare IPv6 CIDRs | - |
+| `--docker` | Also restrict Docker-published 80/443 to Cloudflare (via `DOCKER-USER` chain) | `auto` |
+| `--no-docker` | Do not manage Docker (default auto: prompt when Docker is detected) | `auto` |
 | `--force-keys` | Force regeneration of fwknop keys (overwriting existing ones) | No (reuses existing) |
 | `--dry-run` | Print commands that would be executed without applying changes | - |
 | `-y`, `--yes` | Non-interactive mode (assume Yes to all prompts) | - |
@@ -107,6 +109,18 @@ Backups are stored in `/root/ghost-origin-backup/`. A failed upgrade or removal 
 > ⚠️ By default, the installer runs `ufw --force reset` to guarantee a clean zero-trust policy. If you already have critical UFW rules configured, add `--keep-ufw-rules`.
 
 > 💡 **Privilege Note**: The script enforces a built-in root check at the main entry point. You can either use `ghost-origin <command>` or switch to a root shell (`sudo -i`) once to run commands directly without repeating `sudo`. Non-root execution is caught upfront with a helpful prompt before any actions take place.
+
+### Docker-Published Ports (Important)
+
+**Docker bypasses UFW** when publishing ports with `-p` (it inserts rules into the iptables `DOCKER-USER` / DNAT chains, evaluated before UFW). So with default UFW rules alone, container-published 80/443 are reachable from any source, defeating the "Cloudflare-only" policy.
+
+If Docker is detected (a `DOCKER-USER` chain exists), the installer asks whether to manage it; on approval (or with `--docker`) it:
+
+- Creates and maintains a dedicated `GHOST_ORIGIN_DOCKER` chain: RETURN per Cloudflare CIDR, DROP the rest.
+- Inserts one jump in `DOCKER-USER` that **only matches NEW inbound traffic on the default-route interface destined for `--cf-ports`** (`-i <iface> --ctstate NEW`), so **container egress and inter-container traffic are untouched**.
+- Refreshes it daily together with Cloudflare CIDRs via `cf-ufw-update`; uninstall removes the chain.
+
+> ⚠️ **Limitations**: Restarting the `docker`/`dockerd` service rebuilds `DOCKER-USER` and drops our jump. Run `ghost-origin update-cf` after a Docker restart to re-sync (the daily timer also restores it). IPv6 is best-effort (requires Docker ip6tables). Containers using host networking (`network_mode: host`) traverse the host INPUT chain and are already covered by UFW.
 
 ---
 
@@ -237,6 +251,7 @@ ghost-origin del-ip 1.1.2.1,2.2.2.2
 | **Cloudflare IPv4/IPv6 → 80/443 (TCP)** | **ALLOW** | Official published CIDRs, auto-updated daily |
 | **Established / Related / Loopback (lo)** | **ALLOW** | Standard UFW stateful tracking |
 | **Whitelisted IP Traffic** | **ALLOW** | Explicitly permitted via `allow-ip` |
+| **Docker-published 80/443** | **Cloudflare-only (with --docker)** | Enforced via the `DOCKER-USER` chain; otherwise Docker bypasses UFW |
 | **fwknop SPA Knock Packets (UDP 62201)** | **ALLOW (udp mode) / DROP (pcap mode)** | `udp` mode opens IPv4 port; `pcap` mode drops in UFW and captures raw packets |
 | **Un-knocked SSH (TCP 22) or Any Other Port** | **DROP / REJECT** | External port scans see ports as closed/filtered |
 
@@ -258,7 +273,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-Current constants: `SCRIPT_VERSION="1.3.1"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
+Current constants: `SCRIPT_VERSION="1.4.0"` and `SCRIPT_UPDATED_AT="2026-09-17"` (`yyyy-mm-dd`).
 
 `update` downloads from this repository's `main` branch, checks for nonempty content, valid Bash syntax and the entry-point marker, then atomically replaces `/usr/bin/ghost-origin`. Failures preserve the existing command. It does not run `install` or upgrade helper scripts, dependencies, configuration, keys or firewall rules. `update-cf` only refreshes Cloudflare CIDRs. This trusts HTTPS and the repository; syntax checks are not signature verification. The command always fetches main and does not compare version ordering.
 

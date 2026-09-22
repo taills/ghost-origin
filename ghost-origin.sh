@@ -12,7 +12,7 @@
 set -euo pipefail
 
 readonly SCRIPT_NAME="ghost-origin"
-readonly SCRIPT_VERSION="1.3.1"
+readonly SCRIPT_VERSION="1.4.0"
 readonly SCRIPT_UPDATED_AT="2026-09-17"
 readonly PREFIX="/usr/local"
 readonly CONF_DIR="/etc/ghost-origin"
@@ -38,6 +38,7 @@ SPA_MODE="${SPA_MODE:-udp}"
 ALLOW_SSH_FROM="${ALLOW_SSH_FROM:-}"
 WHITELIST_IPS="${WHITELIST_IPS:-}"
 BOOTSTRAP_SSH="${BOOTSTRAP_SSH:-auto}"
+MANAGE_DOCKER="${MANAGE_DOCKER:-auto}"
 CLI_SPECIFIED_ALLOW_SSH_FROM=0
 CLI_SPECIFIED_SSH_PORT=0
 if [[ -n "${ALLOW_SSH_FROM}" ]]; then
@@ -135,6 +136,8 @@ ${SCRIPT_NAME} ${SCRIPT_VERSION} (updated: ${SCRIPT_UPDATED_AT})
   --no-ufw-enable            只写规则，不执行 ufw --force enable
   --keep-ufw-rules           不执行 ufw reset（保留现有规则，仍会改默认策略）
   --no-ipv6                  不处理 IPv6 / 不放行 Cloudflare IPv6
+  --docker                   对 Docker 容器发布的 80/443 也仅放行 Cloudflare（DOCKER-USER 链）
+  --no-docker                不管理 Docker（默认 auto：检测到 Docker 则询问）
   --skip-apt                 跳过 apt 安装（检测到已有敲门软件时拒绝继续）
   --force-keys               重新生成 fwknop 密钥（覆盖旧密钥）
   --yes, -y                  非交互
@@ -184,6 +187,8 @@ parse_args() {
       --no-ufw-enable) ENABLE_UFW=0; shift ;;
       --keep-ufw-rules) RESET_UFW=0; shift ;;
       --no-ipv6) ENABLE_IPV6=0; shift ;;
+      --docker) MANAGE_DOCKER="yes"; shift ;;
+      --no-docker) MANAGE_DOCKER="no"; shift ;;
       --skip-apt) SKIP_APT=1; shift ;;
       --force-keys) FORCE_KEYS=1; shift ;;
       --yes|-y) ASSUME_YES=1; shift ;;
@@ -462,6 +467,7 @@ FW_ACCESS_TIMEOUT=${FW_ACCESS_TIMEOUT}
 SPA_UDP_PORT=${SPA_UDP_PORT}
 SPA_MODE=${SPA_MODE}
 ENABLE_IPV6=${ENABLE_IPV6}
+MANAGE_DOCKER=${MANAGE_DOCKER}
 EOF
   chmod 600 "${CONF_FILE}"
 }
@@ -573,6 +579,8 @@ CONF_FILE="/etc/ghost-origin/config"
 
 CF_PORTS="${CF_PORTS:-80,443}"
 ENABLE_IPV6="${ENABLE_IPV6:-1}"
+MANAGE_DOCKER="${MANAGE_DOCKER:-0}"
+DOCKER_CHAIN="GHOST_ORIGIN_DOCKER"
 UFW_COMMENT="${UFW_COMMENT:-cf-ufw}"
 CF_IPV4_URL="${CF_IPV4_URL:-https://www.cloudflare.com/ips-v4}"
 CF_IPV6_URL="${CF_IPV6_URL:-https://www.cloudflare.com/ips-v6}"
@@ -643,6 +651,55 @@ delete_rule() {
   /usr/sbin/ufw --force delete allow proto tcp from "${cidr}" to any port "${CF_PORTS}" >/dev/null 2>&1 || true
 }
 
+docker_remove_jumps() {
+  local ipt="$1" num
+  while num="$("${ipt}" -L DOCKER-USER --line-numbers -n 2>/dev/null | awk -v c="${DOCKER_CHAIN}" '$0 ~ c {print $1; exit}')" && [[ -n "${num}" ]]; do
+    "${ipt}" -D DOCKER-USER "${num}" >/dev/null 2>&1 || break
+  done
+}
+
+docker_sync_family() {
+  # $1=iptables|ip6tables  $2=cidr file  $3=ingress iface
+  local ipt="$1" cidr_file="$2" iface="$3" c
+  command -v "${ipt}" >/dev/null 2>&1 || return 0
+  "${ipt}" -L DOCKER-USER -n >/dev/null 2>&1 || return 0
+  "${ipt}" -N "${DOCKER_CHAIN}" 2>/dev/null || true
+  "${ipt}" -F "${DOCKER_CHAIN}"
+  while IFS= read -r c; do
+    [[ -n "${c}" ]] || continue
+    "${ipt}" -A "${DOCKER_CHAIN}" -s "${c}" -j RETURN
+  done < "${cidr_file}"
+  # Anything reaching this chain is NEW inbound to the published web ports.
+  "${ipt}" -A "${DOCKER_CHAIN}" -j DROP
+  docker_remove_jumps "${ipt}"
+  # -i <iface> so only internet-facing NEW web traffic is filtered; container
+  # egress and inter-container traffic enter via bridge interfaces and are untouched.
+  "${ipt}" -I DOCKER-USER -i "${iface}" -p tcp -m multiport --dports "${CF_PORTS}" \
+    -m conntrack --ctstate NEW -j "${DOCKER_CHAIN}"
+}
+
+sync_docker() {
+  [[ "${MANAGE_DOCKER}" == "1" ]] || return 0
+  local iface
+  iface="$(ip -4 route show default 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')"
+  if [[ -z "${iface}" ]]; then
+    log "无法确定默认网卡，跳过 Docker 同步"
+    return 0
+  fi
+  if ! command -v iptables >/dev/null 2>&1 || ! iptables -L DOCKER-USER -n >/dev/null 2>&1; then
+    log "无 DOCKER-USER 链（Docker 未安装或未启用 iptables），跳过 Docker 同步"
+    return 0
+  fi
+  printf '%s\n' "${clean_v4[@]}" > "${tmp}/v4docker"
+  docker_sync_family iptables "${tmp}/v4docker" "${iface}"
+  if [[ "${ENABLE_IPV6}" == "1" || "${ENABLE_IPV6}" -eq 1 ]]; then
+    printf '%s\n' "${clean_v6[@]}" > "${tmp}/v6docker"
+    docker_sync_family ip6tables "${tmp}/v6docker" "${iface}"
+  fi
+  log "Docker DOCKER-USER 已同步：仅允许 Cloudflare 访问容器端口 ${CF_PORTS}（入口网卡 ${iface}）"
+  logger -t cf-ufw-update "docker chain synced for ${CF_PORTS} on ${iface}"
+}
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 
@@ -699,6 +756,8 @@ done
 
 log "Cloudflare 规则已同步: 目标 ${#wanted[@]} 条（v4=${#clean_v4[@]} v6=${#clean_v6[@]}）, 新增 ${added}, 删除 ${removed}"
 logger -t cf-ufw-update "synced ${#wanted[@]} cidrs, added=${added}, removed=${removed}"
+
+sync_docker
 EOF
 
   chmod 755 "${PREFIX}/sbin/fwknop-ufw-open" \
@@ -1312,6 +1371,7 @@ cmd_uninstall() {
     ufw_delete_by_comment "${WHITELIST_COMMENT}"
     ufw_delete_by_comment ghost-origin-spa
   fi
+  docker_cleanup
   run rm -f /etc/systemd/system/cf-ufw-update.service \
             /etc/systemd/system/cf-ufw-update.timer \
             "${PREFIX}/sbin/fwknop-ufw-open" \
@@ -1360,6 +1420,43 @@ cmd_update() {
   install_cli remote
 }
 
+docker_user_chain_present() {
+  have_cmd iptables && iptables -L DOCKER-USER -n >/dev/null 2>&1
+}
+
+resolve_docker_choice() {
+  case "${MANAGE_DOCKER}" in
+    yes) MANAGE_DOCKER=1; return 0 ;;
+    no)  MANAGE_DOCKER=0; return 0 ;;
+  esac
+  # auto
+  if [[ "${DRY_RUN}" -eq 1 ]]; then MANAGE_DOCKER=0; return 0; fi
+  if have_cmd docker && docker_user_chain_present; then
+    if confirm_yes_default "检测到 Docker（DOCKER-USER 链）。Docker 发布端口会绕过 UFW；是否让容器的 ${CF_PORTS} 也仅放行 Cloudflare？"; then
+      MANAGE_DOCKER=1
+      log "已启用 Docker DOCKER-USER 链的 Cloudflare-only 限制"
+    else
+      MANAGE_DOCKER=0
+      warn "未启用 Docker 限制：容器发布的 ${CF_PORTS} 仍可被任意来源直达，绕过 Cloudflare。"
+    fi
+  else
+    MANAGE_DOCKER=0
+  fi
+}
+
+docker_cleanup() {
+  local ipt num chain="GHOST_ORIGIN_DOCKER"
+  for ipt in iptables ip6tables; do
+    have_cmd "${ipt}" || continue
+    "${ipt}" -L DOCKER-USER -n >/dev/null 2>&1 || continue
+    while num="$("${ipt}" -L DOCKER-USER --line-numbers -n 2>/dev/null | awk -v c="${chain}" '$0 ~ c {print $1; exit}')" && [[ -n "${num}" ]]; do
+      run "${ipt}" -D DOCKER-USER "${num}" >/dev/null 2>&1 || break
+    done
+    "${ipt}" -F "${chain}" 2>/dev/null || true
+    "${ipt}" -X "${chain}" 2>/dev/null || true
+  done
+}
+
 cmd_install() {
   need_root
   validate_ports_csv "${CF_PORTS}"
@@ -1370,6 +1467,7 @@ cmd_install() {
   have_cmd ip || die "需要 iproute2"
   preflight_ssh_access
   preflight_existing_tools
+  resolve_docker_choice
 
   cat <<EOF
 即将配置:
@@ -1378,6 +1476,7 @@ cmd_install() {
   fwknop SPA 可打开: ${SPA_PORTS}（${FW_ACCESS_TIMEOUT}s）
   SPA 接收模式: ${SPA_MODE}（udp 模式放行 IPv4 UDP/${SPA_UDP_PORT}；pcap 模式不放行）
   SSH 应急规则: $([[ -n "${ALLOW_SSH_FROM}" ]] && echo "允许 ${ALLOW_SSH_FROM} -> TCP/${SSH_PORT}" || echo "无（需先敲门）")
+  Docker 限制: $([[ "${MANAGE_DOCKER}" == "1" ]] && echo "启用（容器 ${CF_PORTS} 仅放行 Cloudflare）" || echo "不管理")
   网卡: $(default_iface || echo 未知)
   UFW reset: $([[ ${RESET_UFW} -eq 1 ]] && echo 是，将清空现有规则 || echo 否，保留现有规则)
 EOF

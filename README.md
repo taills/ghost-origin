@@ -100,6 +100,8 @@ ghost-origin update-cf
 | `--keep-ufw-rules` | 不执行 `ufw reset`，保留现有自定义规则 | 否（默认清空） |
 | `--no-ufw-enable` | 只写规则，不执行 `ufw --force enable` | - |
 | `--no-ipv6` | 不处理 IPv6 / 不放行 Cloudflare IPv6 | - |
+| `--docker` | 对 Docker 容器发布的 80/443 也仅放行 Cloudflare（写入 `DOCKER-USER` 链） | `auto` |
+| `--no-docker` | 不管理 Docker（默认 auto：检测到 Docker 时询问） | `auto` |
 | `--force-keys` | 强制重新生成 fwknop 密钥（覆盖旧密钥） | 否（优先复用） |
 | `--dry-run` | 演练模式：只打印将执行的命令，不做实际更改 | - |
 | `-y` / `--yes` | 免交互自动确认 | - |
@@ -107,6 +109,18 @@ ghost-origin update-cf
 > ⚠️ 默认安装时会执行 `ufw --force reset` 以确保建立纯净的零信任策略。若机器上已有其他重要 UFW 规则，请务必添加 `--keep-ufw-rules` 选项。
 
 > 💡 **权限说明**：本工具已在入口处内置 root 权限检测。你可以使用 `ghost-origin <子命令>`，或直接执行 `sudo -i` 切换到 root 环境后运行（免去每次重复敲 `sudo`）。非 root 运行时会自动拦截、提示并退出，避免执行半途报错。
+
+### Docker 容器发布端口的放行（重要）
+
+**Docker 用 `-p` 发布端口时会绕过 UFW**（Docker 直接在 iptables 的 `DOCKER-USER` / DNAT 链插规则，在 UFW 之前生效）。因此仅靠默认的 UFW 规则，容器发布的 80/443 对任何来源都是可达的，会架空「仅 Cloudflare」策略。
+
+本脚本安装时若检测到 Docker（存在 `DOCKER-USER` 链）会询问是否一并接管；确认后（或加 `--docker`）会：
+
+- 创建并维护自管链 `GHOST_ORIGIN_DOCKER`：逐条放行 Cloudflare 网段、丢弃其余；
+- 在 `DOCKER-USER` 链插入一条跳转，**仅匹配「从默认路由网卡新建、目的端口为 `--cf-ports`」的入站流量**（`-i <网卡> --ctstate NEW`），因此**不影响容器出站与容器间通信**；
+- 由 `cf-ufw-update` 每日随 Cloudflare 网段一起刷新；卸载时自动清理该链。
+
+> ⚠️ **限制**：`docker` / `dockerd` 服务重启会重建 `DOCKER-USER` 链、清掉我们的跳转。重启 Docker 后请执行 `ghost-origin update-cf` 重新同步（每日定时器也会自动补回）。IPv6 为尽力而为（需 Docker 启用 ip6tables）。仅使用宿主网络（`network_mode: host`）的容器走宿主 INPUT，本就受 UFW 保护，无需此项。
 
 ---
 
@@ -237,6 +251,7 @@ ghost-origin del-ip 1.1.2.1,2.2.2.2
 | **Cloudflare IPv4/IPv6 → 80/443 (TCP)** | **ALLOW** | 官方公布 CIDR 放行，systemd 每日自动更新 |
 | **已建立连接 / 回环接口 (lo)** | **ALLOW** | UFW 默认机制，现有连接不中断 |
 | **白名单 IP 流量** | **ALLOW** | 手动添加的免敲门 IP/网段与端口 |
+| **Docker 容器发布的 80/443** | **仅 Cloudflare（启用 --docker 时）** | 通过 `DOCKER-USER` 链限制；未启用时 Docker 会绕过 UFW |
 | **fwknop SPA 敲门传输 (UDP 62201)** | **ALLOW (udp 模式) / DROP (pcap 模式)** | `udp` 模式放行 IPv4 传输端口；`pcap` 模式防火墙拒绝并由底层捕获 |
 | **未敲门的 SSH (TCP 22) 或其他所有入站** | **DROP / REJECT** | 外部扫描探测显示端口关闭/被过滤 |
 
@@ -258,7 +273,7 @@ ghost-origin update --dry-run
 ghost-origin --version
 ```
 
-当前版本常量为 `SCRIPT_VERSION="1.3.1"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
+当前版本常量为 `SCRIPT_VERSION="1.4.0"`，更新时间常量为 `SCRIPT_UPDATED_AT="2026-09-17"`（`yyyy-mm-dd`）。
 
 `update` 从本仓库 `main` 分支下载脚本，检查非空、Bash 语法及入口标记后原子替换 `/usr/bin/ghost-origin`。失败时保留旧命令。该操作不执行 `install`，不更新辅助脚本、依赖、配置、密钥或防火墙规则；`update-cf` 仅同步 Cloudflare 网段，与脚本升级不同。这里依赖 HTTPS 和仓库可信性，语法检查不等于签名验证；始终获取 main，不进行版本大小比较。
 
